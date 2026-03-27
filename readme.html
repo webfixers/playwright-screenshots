@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Website Screenshot Automation with Playwright</title>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 980px; margin: 32px auto; padding: 0 20px; color: #222; }
+    h1, h2, h3 { line-height: 1.25; }
+    code, pre { font-family: Menlo, Monaco, Consolas, monospace; }
+    pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+    code { background: #f6f8fa; padding: 0.1em 0.3em; border-radius: 4px; }
+    .note, .warn { border-left: 4px solid #2f6feb; background: #f6f8fa; padding: 12px 14px; margin: 16px 0; }
+    .warn { border-left-color: #d8a100; }
+    ul li { margin: 0.35em 0; }
+  </style>
+</head>
+<body>
+  <h1>Website screenshot automation with Playwright</h1>
+  <p>This project captures full-page screenshots of all relevant pages in a website, based on a root URL or a <code>sitemap.xml</code>. It is intended as a practical visual archive after go-live, with screenshot sets tailored to Beaver Builder breakpoints.</p>
+
+  <h2>Your current project folder</h2>
+  <pre><code>/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots</code></pre>
+
+  <h2>Recommended project structure</h2>
+  <p>Keep the Python script and the virtual environment together in the same project folder.</p>
+  <pre><code>playwright-screenshots/
+├── screenshot.py
+├── .venv/
+└── screenshots/   (created after a run)</code></pre>
+
+  <div class="note">
+    <strong>Important:</strong> you only install the dependencies once. After that, you usually just activate the virtual environment and run the script.
+  </div>
+
+  <h2>First-time setup</h2>
+  <p>Only do this once on a new Mac or after rebuilding the project folder.</p>
+  <pre><code>cd "/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install playwright aiohttp
+python -m playwright install</code></pre>
+
+  <h2>Every next time</h2>
+  <pre><code>cd "/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots"
+source .venv/bin/activate</code></pre>
+
+  <p>When your prompt shows <code>(.venv)</code>, you are ready to run the script.</p>
+
+  <div class="warn">
+    <strong>Do not reinstall Playwright every time.</strong> Activation is enough. Reinstall only if you intentionally recreate <code>.venv</code> or if dependencies break.
+  </div>
+
+  <h2>Usage</h2>
+  <h3>Basic</h3>
+  <pre><code>python screenshot.py --url https://example.com/sitemap.xml --variant basic --generate-index</code></pre>
+
+  <h3>Extended</h3>
+  <pre><code>python screenshot.py --url https://example.com/sitemap.xml --variant extended --generate-index</code></pre>
+
+  <h3>Custom output folder</h3>
+  <pre><code>python screenshot.py --url https://example.com/sitemap.xml --variant basic --output my-output --generate-index</code></pre>
+
+  <h3>Retry only previously failed URLs for the same domain</h3>
+  <pre><code>python screenshot.py --url https://example.com/sitemap.xml --variant basic --only-failed</code></pre>
+
+  <h2>Output structure</h2>
+  <p>The script now creates a separate folder per domain, so screenshots from different websites do not get mixed together.</p>
+  <pre><code>screenshots/
+└── example.com/
+    ├── report.json
+    ├── report.csv
+    └── 2026-03-27/
+        ├── home/
+        │   ├── desktop.png
+        │   ├── medium.png
+        │   ├── tablet.png
+        │   └── mobile.png
+        ├── about/
+        │   └── ...
+        └── index.html</code></pre>
+
+  <p>That means each domain gets its own folder, and inside that folder you will find:</p>
+  <ul>
+    <li><code>report.json</code></li>
+    <li><code>report.csv</code></li>
+    <li>a dated run folder</li>
+    <li>an optional <code>index.html</code> in the dated run folder when <code>--generate-index</code> is used</li>
+  </ul>
+
+  <h2>Visible progress in Terminal</h2>
+  <p>The script now prints progress while running, for example:</p>
+  <pre><code>[1/11] Starting https://example.com/
+[1/11] home -&gt; viewport 1/4: desktop (1400x900)
+[1/11] Saved desktop: home/desktop.png
+[1/11] home -&gt; viewport 2/4: medium (1199x900)
+...
+[1/11] Finished https://example.com/ | successful viewports: 4, failed viewports: 0</code></pre>
+
+  <p>At the end it also prints a short summary with page counts and viewport success or failure counts.</p>
+
+  <h2>Useful checks</h2>
+  <h3>Check which Python is active</h3>
+  <pre><code>which python</code></pre>
+
+  <h3>Check whether the script can start</h3>
+  <pre><code>python screenshot.py --help</code></pre>
+
+  <h3>Open the project folder in Finder</h3>
+  <pre><code>open .</code></pre>
+
+  <h2>Troubleshooting</h2>
+  <h3><code>python: command not found</code></h3>
+  <p>Your virtual environment is probably not active, or it was moved and broke. Activate it again, or recreate <code>.venv</code> if needed.</p>
+
+  <h3><code>No module named playwright</code></h3>
+  <p>You are likely outside the active virtual environment. Run:</p>
+  <pre><code>source .venv/bin/activate</code></pre>
+
+  <h3>The project folder was moved</h3>
+  <p>If you moved the whole project folder and activation no longer works properly, recreate the virtual environment in the new location:</p>
+  <pre><code>rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install playwright aiohttp
+python -m playwright install</code></pre>
+</body>
+</html>
