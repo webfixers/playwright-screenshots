@@ -361,6 +361,33 @@ def generate_html_index(report: List[Dict[str, Optional[str]]], run_dir: str, da
     print(f"Generated HTML index at {index_path}")
 
 
+def preview_urls(urls: List[str], only_failed: bool, large_run_threshold: int = 100) -> bool:
+    """Print a short pre-run summary and confirm very large runs."""
+    total_urls = len(urls)
+    source_label = 'previously failed URLs' if only_failed else 'URLs from sitemap'
+    preview_count = min(5, total_urls)
+
+    print(f"Preparing to process {total_urls} {source_label}.")
+    if preview_count > 0:
+        print('URL preview:')
+        for preview_url in urls[:preview_count]:
+            print(f" - {preview_url}")
+        if total_urls > preview_count:
+            print(f" ... and {total_urls - preview_count} more")
+
+    if total_urls >= large_run_threshold:
+        print(f"Warning: this is a large run ({total_urls} URLs).")
+        if sys.stdin.isatty():
+            choice = input('Continue? [y/N]: ').strip().lower()
+            if choice not in ('y', 'yes'):
+                print('Aborted before starting screenshots.')
+                return False
+        else:
+            print('Non-interactive session detected, continuing without confirmation.')
+
+    return True
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Website screenshotter using Playwright.')
     parser.add_argument('--url', required=True, help='Root URL of the website (e.g. https://example.com) or a sitemap.xml URL.')
@@ -422,6 +449,8 @@ async def main() -> None:
     total_pages = len(urls)
     if total_pages == 0:
         print('No URLs to process.', file=sys.stderr)
+        return
+    if not preview_urls(urls, args.only_failed):
         return
 
     report: List[Dict[str, Optional[str]]] = []

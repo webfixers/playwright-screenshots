@@ -92,6 +92,8 @@ Pages processed: 11 | Pages with at least one successful viewport: 11 | Pages wi
 Viewport results -> success: 44, failed: 0
 ```
 
+Before screenshots start, the script also shows a short preview of the URLs it is about to process. In interactive Terminal sessions, runs of 100 URLs or more require confirmation before capture begins.
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
