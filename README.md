@@ -4,11 +4,7 @@ A local Python tool to generate full-page screenshots of all relevant pages in a
 
 ## Project location
 
-Your current project folder is:
-
-```text
-/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots
-```
+The project can live in any folder on your Mac. The `.command` launcher now resolves its own location automatically, so moving the project folder does not require editing the launcher.
 
 ## Recommended project structure
 
@@ -42,7 +38,7 @@ python -m playwright install
 When you want to generate screenshots again later, open Terminal and run:
 
 ```bash
-cd "/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots"
+cd "/path/to/playwright-screenshots"
 source .venv/bin/activate
 ```
 
@@ -73,7 +69,7 @@ python screenshot.py --url https://example.com/sitemap.xml --variant basic --gen
 ### Example with your current workflow
 
 ```bash
-cd "/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots"
+cd "/path/to/playwright-screenshots"
 source .venv/bin/activate
 python screenshot.py --url https://example.com/sitemap.xml --variant basic --generate-index
 ```
@@ -156,7 +152,7 @@ Use `python3` for creating the virtual environment. Inside the activated virtual
 This usually means the virtual environment is not active. Run:
 
 ```bash
-cd "/Users/mennofink/Library/CloudStorage/GoogleDrive-menno@webfixers.nl/.shortcut-targets-by-id/1snrUQNe2fCBN9HocLIwfJVuVQU4AE_2x/Development/Applicaties/playwright-screenshots"
+cd "/path/to/playwright-screenshots"
 source .venv/bin/activate
 ```
 
