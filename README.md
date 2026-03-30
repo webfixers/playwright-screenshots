@@ -84,6 +84,12 @@ python screenshot.py --url https://example.com/sitemap.xml --variant basic --inc
 python screenshot.py --url https://example.com/sitemap.xml --variant basic --max-urls 10 --generate-index --no-open
 ```
 
+### Example with the slow timeout profile
+
+```bash
+python screenshot.py --url example.com --variant basic --timeout-profile slow
+```
+
 ### Example with a website list file
 
 ```bash
@@ -142,6 +148,11 @@ For long pages, the script now scrolls through the page, waits for the document 
 
 In batch mode, the script processes sites one by one and prints a short summary at the end. Automatic opening is skipped in batch mode to avoid opening many Finder windows or browser tabs.
 
+You can choose a timeout profile too:
+
+- `normal`: default timing for typical websites
+- `slow`: longer waits for heavier, slower, or more script-heavy websites
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
@@ -170,6 +181,7 @@ screenshots/
 - `--include`: only process URLs containing one or more path fragments
 - `--exclude`: skip URLs containing one or more path fragments
 - `--max-urls`: process at most this many URLs after filtering
+- `--timeout-profile`: choose `normal` or `slow` timing behavior
 - `--generate-index`: creates an HTML gallery of screenshots
 - `--no-open`: do not open the output automatically after a successful run
 - `--output`: custom output directory

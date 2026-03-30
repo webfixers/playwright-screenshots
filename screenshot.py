@@ -52,6 +52,28 @@ import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, Response
 
 
+TIMEOUT_PROFILES: Dict[str, Dict[str, int]] = {
+    'normal': {
+        'request_timeout_ms': 30000,
+        'goto_timeout_ms': 60000,
+        'initial_networkidle_timeout_ms': 30000,
+        'post_scroll_networkidle_timeout_ms': 5000,
+        'stable_height_interval_ms': 400,
+        'scroll_pause_ms': 250,
+        'final_wait_ms': 750,
+    },
+    'slow': {
+        'request_timeout_ms': 60000,
+        'goto_timeout_ms': 90000,
+        'initial_networkidle_timeout_ms': 45000,
+        'post_scroll_networkidle_timeout_ms': 15000,
+        'stable_height_interval_ms': 700,
+        'scroll_pause_ms': 500,
+        'final_wait_ms': 1500,
+    },
+}
+
+
 def slugify(url: str) -> str:
     """Convert a URL into a filesystem-safe slug.
 
@@ -252,12 +274,12 @@ def apply_url_filters(
     }
 
 
-async def fetch_xml(session: aiohttp.ClientSession, url: str) -> str:
+async def fetch_xml(session: aiohttp.ClientSession, url: str, request_timeout_ms: int) -> str:
     """Fetch XML content from a URL with retries."""
     retries = 3
     for attempt in range(retries):
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=request_timeout_ms / 1000)) as resp:
                 resp.raise_for_status()
                 return await resp.text()
         except Exception as exc:
@@ -267,7 +289,7 @@ async def fetch_xml(session: aiohttp.ClientSession, url: str) -> str:
             raise exc
 
 
-async def parse_sitemaps(root_url: str) -> Tuple[Set[str], Optional[str]]:
+async def parse_sitemaps(root_url: str, request_timeout_ms: int) -> Tuple[Set[str], Optional[str]]:
     """Recursively fetch and parse sitemap candidates for a website."""
 
     async def _parse(url: str, session: aiohttp.ClientSession, seen_sitemaps: Set[str], urls: Set[str]) -> bool:
@@ -275,7 +297,7 @@ async def parse_sitemaps(root_url: str) -> Tuple[Set[str], Optional[str]]:
             return True
         seen_sitemaps.add(url)
         try:
-            xml_content = await fetch_xml(session, url)
+            xml_content = await fetch_xml(session, url, request_timeout_ms)
         except Exception as e:
             return False
         try:
@@ -368,10 +390,10 @@ async def wait_for_stable_page_height(
         await page.wait_for_timeout(interval_ms)
 
 
-async def scroll_to_bottom(page: Page) -> None:
+async def scroll_to_bottom(page: Page, timing_profile: Dict[str, int]) -> None:
     """Scroll down the page gradually and settle long pages before capture."""
     await page.evaluate("""
-        async () => {
+        async (scrollPauseMs) => {
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const getRoot = () => document.scrollingElement || document.documentElement || document.body;
 
@@ -383,7 +405,7 @@ async def scroll_to_bottom(page: Page) -> None:
                 const viewportHeight = window.innerHeight || 800;
                 const distance = Math.max(400, Math.floor(viewportHeight * 0.85));
                 window.scrollBy(0, distance);
-                await sleep(250);
+                await sleep(scrollPauseMs);
 
                 const currentRoot = getRoot();
                 const currentHeight = Math.max(
@@ -410,8 +432,8 @@ async def scroll_to_bottom(page: Page) -> None:
 
             window.scrollTo(0, 0);
         }
-    """)
-    await wait_for_stable_page_height(page)
+    """, timing_profile['scroll_pause_ms'])
+    await wait_for_stable_page_height(page, interval_ms=timing_profile['stable_height_interval_ms'])
 
 
 async def process_url(
@@ -422,6 +444,7 @@ async def process_url(
     report: List[Dict[str, Optional[str]]],
     sitemap_source: str,
     retries: int,
+    timing_profile: Dict[str, int],
     page_index: int,
     total_pages: int,
 ) -> None:
@@ -453,21 +476,31 @@ async def process_url(
             try:
                 context = await browser.new_context(viewport={"width": width, "height": height})
                 page = await context.new_page()
-                response: Optional[Response] = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                response: Optional[Response] = await page.goto(
+                    url,
+                    wait_until='domcontentloaded',
+                    timeout=timing_profile['goto_timeout_ms'],
+                )
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=30000)
+                    await page.wait_for_load_state(
+                        'networkidle',
+                        timeout=timing_profile['initial_networkidle_timeout_ms'],
+                    )
                 except Exception:
                     pass
                 final_url = page.url
                 status_code = response.status if response else None
                 page_title = await page.title()
                 await hide_overlays_and_disable_animations(page)
-                await scroll_to_bottom(page)
+                await scroll_to_bottom(page, timing_profile)
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=5000)
+                    await page.wait_for_load_state(
+                        'networkidle',
+                        timeout=timing_profile['post_scroll_networkidle_timeout_ms'],
+                    )
                 except Exception:
                     pass
-                await page.wait_for_timeout(750)
+                await page.wait_for_timeout(timing_profile['final_wait_ms'])
                 await page.screenshot(path=screenshot_path, full_page=True)
                 success = True
                 page_successes += 1
@@ -621,6 +654,7 @@ async def run_for_site(
     date_str: str,
     include_terms: List[str],
     exclude_terms: List[str],
+    timing_profile: Dict[str, int],
     should_open_output: bool,
     site_index: int,
     total_sites: int,
@@ -660,7 +694,10 @@ async def run_for_site(
         print(f"{site_label} Rerunning {len(urls)} previously failed URLs for this domain...")
     else:
         print(f"{site_label} Fetching sitemap(s)...")
-        sitemap_urls, resolved_sitemap_source = await parse_sitemaps(normalized_input_url)
+        sitemap_urls, resolved_sitemap_source = await parse_sitemaps(
+            normalized_input_url,
+            timing_profile['request_timeout_ms'],
+        )
         if resolved_sitemap_source:
             sitemap_source = resolved_sitemap_source
             print(f"{site_label} Using sitemap source: {resolved_sitemap_source}")
@@ -698,7 +735,7 @@ async def run_for_site(
             async with semaphore:
                 await process_url(
                     browser, page_url, viewports, paths['run_dir'], report,
-                    sitemap_source, args.retries, page_index, total_pages
+                    sitemap_source, args.retries, timing_profile, page_index, total_pages
                 )
 
         tasks = [
@@ -710,7 +747,7 @@ async def run_for_site(
         for index, page_url in enumerate(urls, start=1):
             await process_url(
                 browser, page_url, viewports, paths['run_dir'], report,
-                sitemap_source, args.retries, index, total_pages
+                sitemap_source, args.retries, timing_profile, index, total_pages
             )
 
     with open(paths['report_json'], 'w', encoding='utf-8') as f:
@@ -771,6 +808,8 @@ async def main() -> None:
                         help='Skip URLs containing these path fragments. Repeat or separate multiple values with commas.')
     parser.add_argument('--max-urls', type=int,
                         help='Process at most this many URLs after filtering. Useful for safer sample runs.')
+    parser.add_argument('--timeout-profile', choices=['normal', 'slow'], default='normal',
+                        help='Timing profile for page loading and waits (default: normal). Use slow for heavier sites.')
     parser.add_argument('--only-failed', action='store_true',
                         help='Reprocess only pages marked as failed in the last report.json file for this domain.')
     parser.add_argument('--generate-index', action='store_true',
@@ -793,6 +832,7 @@ async def main() -> None:
 
     include_terms = parse_filter_terms(args.include)
     exclude_terms = parse_filter_terms(args.exclude)
+    timing_profile = TIMEOUT_PROFILES[args.timeout_profile]
 
     basic_viewports = [
         ('desktop', 1400, 900),
@@ -823,6 +863,7 @@ async def main() -> None:
     should_open_output = len(site_inputs) == 1
     if len(site_inputs) > 1 and not args.no_open:
         print('Batch mode detected: automatic opening is skipped to avoid opening many windows.')
+    print(f"Using timeout profile: {args.timeout_profile}")
 
     site_results: List[Dict[str, object]] = []
 
@@ -838,6 +879,7 @@ async def main() -> None:
                     date_str,
                     include_terms,
                     exclude_terms,
+                    timing_profile,
                     should_open_output,
                     site_index,
                     len(site_inputs),

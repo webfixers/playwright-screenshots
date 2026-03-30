@@ -131,6 +131,27 @@ if [[ -n "$MAX_URLS" ]]; then
 fi
 
 echo
+echo "Choose timeout profile:"
+echo "1) normal"
+echo "2) slow"
+read "TIMEOUT_PROFILE_CHOICE?Enter 1 or 2 [1]: "
+
+case "$TIMEOUT_PROFILE_CHOICE" in
+  ""|1)
+    TIMEOUT_PROFILE="normal"
+    ;;
+  2)
+    TIMEOUT_PROFILE="slow"
+    ;;
+  *)
+    echo
+    echo "Invalid choice. Press Enter to close..."
+    read
+    exit 1
+    ;;
+esac
+
+echo
 echo "Open output automatically after the run?"
 echo "1) yes"
 echo "2) no"
@@ -174,6 +195,8 @@ if [[ -n "$MAX_URLS" ]]; then
   echo "Max URLs: $MAX_URLS"
 fi
 
+echo "Timeout profile: $TIMEOUT_PROFILE"
+
 echo
 
 COMMAND=(python screenshot.py --variant "$VARIANT" --generate-index)
@@ -199,6 +222,8 @@ fi
 if [[ -n "$MAX_URLS" ]]; then
   COMMAND+=(--max-urls "$MAX_URLS")
 fi
+
+COMMAND+=(--timeout-profile "$TIMEOUT_PROFILE")
 
 if [[ "$NO_OPEN" == "true" ]]; then
   COMMAND+=(--no-open)
