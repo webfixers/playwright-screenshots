@@ -153,6 +153,13 @@ You can choose a timeout profile too:
 - `normal`: default timing for typical websites
 - `slow`: longer waits for heavier, slower, or more script-heavy websites
 
+The capture flow is now a bit more defensive on difficult sites too:
+
+- it hides common consent and modal overlays more carefully
+- it avoids broad layout selectors like generic banners or sticky sections
+- it can run one extra stabilization pass when a page still looks suspiciously blank or blocked
+- it records redirect and suspicious-result flags in the reports for easier follow-up
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
@@ -188,6 +195,16 @@ screenshots/
 - `--only-failed`: rerun only pages that failed previously
 - `--retries`: number of retries per page and viewport
 - `--concurrency`: number of pages processed in parallel
+
+## Report notes
+
+`report.json` and `report.csv` now also include a few extra diagnostics:
+
+- `redirected`: whether the final page target differs meaningfully from the requested URL
+- `result_flags`: simple markers such as `redirected`, `very_low_content` or `likely_blocking_overlay`
+- `extra_stabilization_pass`: whether the script used an extra recovery pass before taking the screenshot
+
+These flags do not automatically fail a page, but they help spot pages that deserve a manual check.
 
 ## Versioning
 
@@ -248,4 +265,7 @@ When the virtual environment is active, it should point to a path ending in `.ve
 
 ## Roadmap
 
-A good next improvement is to add simple `.command` launcher files, and after that a small graphical interface where you can paste a sitemap URL and choose `Basic` or `Extended`.
+Likely future improvements are:
+
+- further investigation into true full-page capture on especially long pages
+- a lightweight GUI for non-technical daily use

@@ -45,7 +45,7 @@ import subprocess
 import sys
 from collections import Counter
 from html import escape
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import aiohttp
@@ -71,6 +71,29 @@ TIMEOUT_PROFILES: Dict[str, Dict[str, int]] = {
         'scroll_pause_ms': 500,
         'final_wait_ms': 1500,
     },
+}
+
+OVERLAY_SELECTORS = [
+    '[id*="cookie"]', '[class*="cookie"]',
+    '[id*="consent"]', '[class*="consent"]',
+    '[id*="gdpr"]', '[class*="gdpr"]',
+    '[class*="modal"]', '[id*="modal"]',
+    '[class*="popup"]', '[id*="popup"]',
+    '[class*="newsletter"]', '[id*="newsletter"]',
+    '[class*="subscribe"]', '[id*="subscribe"]',
+    '[class*="chat"]', '[id*="chat"]',
+    '[id*="onetrust"]', '[class*="onetrust"]',
+    '[id*="complianz"]', '[class*="complianz"]',
+    '[id*="cookiebot"]', '[class*="cookiebot"]',
+    '[aria-modal="true"]',
+]
+
+SECOND_PASS_FLAGS = {
+    'body_hidden',
+    'document_hidden',
+    'very_low_content',
+    'likely_blocking_overlay',
+    'tiny_page_height',
 }
 
 
@@ -129,6 +152,25 @@ def build_output_paths(base_output_dir: str, root_url: str, date_str: str) -> Di
         'report_csv': os.path.join(domain_dir, 'report.csv'),
         'index_html': os.path.join(run_dir, 'index.html'),
     }
+
+
+def canonical_page_target(url: Optional[str]) -> Tuple[str, str]:
+    """Return a normalized host/path pair for redirect comparison."""
+    if not url:
+        return '', '/'
+    parsed = urlparse(url)
+    host = (parsed.netloc or parsed.path).lower().strip()
+    host = host.split('@')[-1].split(':')[0].strip('/')
+    if host.startswith('www.'):
+        host = host[4:]
+    path = parsed.path or '/'
+    path = path.rstrip('/') or '/'
+    return host, path
+
+
+def has_meaningful_redirect(input_url: str, final_url: Optional[str]) -> bool:
+    """Return True when the final page target differs beyond scheme or trailing slash."""
+    return canonical_page_target(input_url) != canonical_page_target(final_url)
 
 
 def normalize_input_url(raw_input: str) -> str:
@@ -345,17 +387,152 @@ async def hide_overlays_and_disable_animations(page: Page) -> None:
             transition-delay: 0s !important;
         }
     """
-    overlay_selectors = [
-        '[id*="cookie"]', '[class*="cookie"]', '[id*="gdpr"]', '[class*="gdpr"]',
-        '[class*="modal"]', '[id*="modal"]', '[class*="popup"]', '[id*="popup"]',
-        '[class*="newsletter"]', '[id*="newsletter"]', '[class*="subscribe"]',
-        '[id*="subscribe"]', '[class*="chat"]', '[id*="chat"]'
-    ]
     overlay_css = '\n'.join(
         f"{sel} {{ display: none !important; visibility: hidden !important; }}"
-        for sel in overlay_selectors
+        for sel in OVERLAY_SELECTORS
     )
-    await page.add_style_tag(content=disable_css + overlay_css)
+    helper_css = """
+        [data-playwright-blocking-overlay="true"] {
+            display: none !important;
+            visibility: hidden !important;
+        }
+        html[data-playwright-reset-overflow="true"],
+        body[data-playwright-reset-overflow="true"] {
+            overflow: auto !important;
+        }
+    """
+    await page.add_style_tag(content=disable_css + overlay_css + helper_css)
+    await page.evaluate("""
+        () => {
+            const tokenPattern = /(cookie|consent|gdpr|modal|popup|newsletter|subscribe|chat|intercom|drift|hubspot|onetrust|complianz|cookiebot)/i;
+            const viewportArea = Math.max(1, (window.innerWidth || 1) * (window.innerHeight || 1));
+
+            for (const element of Array.from(document.querySelectorAll('body *'))) {
+                if (!(element instanceof HTMLElement)) {
+                    continue;
+                }
+
+                const style = getComputedStyle(element);
+                const descriptor = [
+                    element.id,
+                    element.className,
+                    element.getAttribute('role'),
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('data-testid'),
+                ].filter(Boolean).join(' ');
+
+                const rect = element.getBoundingClientRect();
+                const areaRatio = (Math.max(0, rect.width) * Math.max(0, rect.height)) / viewportArea;
+                const isFixedLike = style.position === 'fixed' || style.position === 'sticky';
+                const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                const looksLarge = areaRatio >= 0.12 || rect.height >= (window.innerHeight || 0) * 0.22;
+                const tokenMatch = tokenPattern.test(descriptor);
+                const ariaModal = element.getAttribute('aria-modal') === 'true';
+
+                if ((tokenMatch && isFixedLike && looksLarge) || (ariaModal && looksLarge) || (tokenMatch && zIndex >= 100 && looksLarge)) {
+                    element.setAttribute('data-playwright-blocking-overlay', 'true');
+                }
+            }
+
+            for (const root of [document.documentElement, document.body]) {
+                if (!(root instanceof HTMLElement)) {
+                    continue;
+                }
+                if (getComputedStyle(root).overflow === 'hidden') {
+                    root.setAttribute('data-playwright-reset-overflow', 'true');
+                }
+            }
+        }
+    """)
+
+
+async def collect_page_state(page: Page) -> Dict[str, Any]:
+    """Collect lightweight page metrics to spot suspiciously blank results."""
+    return await page.evaluate("""
+        () => {
+            const root = document.scrollingElement || document.documentElement || document.body;
+            const body = document.body;
+            const html = document.documentElement;
+            const bodyStyle = body ? getComputedStyle(body) : null;
+            const htmlStyle = html ? getComputedStyle(html) : null;
+            const text = body && body.innerText ? body.innerText.trim() : '';
+            const htmlLength = body && body.innerHTML ? body.innerHTML.length : 0;
+            const overlayCount = document.querySelectorAll('[data-playwright-blocking-overlay="true"]').length;
+            return {
+                body_text_length: text.length,
+                body_html_length: htmlLength,
+                body_hidden: !!(bodyStyle && (bodyStyle.display === 'none' || bodyStyle.visibility === 'hidden' || bodyStyle.opacity === '0')),
+                document_hidden: !!(htmlStyle && (htmlStyle.display === 'none' || htmlStyle.visibility === 'hidden' || htmlStyle.opacity === '0')),
+                scroll_height: Math.max(
+                    root ? root.scrollHeight : 0,
+                    html ? html.scrollHeight : 0,
+                    body ? body.scrollHeight : 0
+                ),
+                viewport_height: window.innerHeight || 0,
+                main_like_elements: document.querySelectorAll('main, [role="main"], article').length,
+                blocking_overlay_count: overlayCount,
+            };
+        }
+    """)
+
+
+def analyze_page_state(
+    input_url: str,
+    final_url: Optional[str],
+    status_code: Optional[int],
+    page_title: Optional[str],
+    page_state: Dict[str, Any],
+) -> List[str]:
+    """Translate page metrics into readable report flags."""
+    flags: List[str] = []
+
+    if has_meaningful_redirect(input_url, final_url):
+        flags.append('redirected')
+    if status_code is not None and status_code >= 400:
+        flags.append(f'http_{status_code}')
+    if page_state.get('body_hidden'):
+        flags.append('body_hidden')
+    if page_state.get('document_hidden'):
+        flags.append('document_hidden')
+
+    body_text_length = int(page_state.get('body_text_length') or 0)
+    body_html_length = int(page_state.get('body_html_length') or 0)
+    scroll_height = int(page_state.get('scroll_height') or 0)
+    viewport_height = int(page_state.get('viewport_height') or 0)
+    main_like_elements = int(page_state.get('main_like_elements') or 0)
+    blocking_overlay_count = int(page_state.get('blocking_overlay_count') or 0)
+
+    if body_text_length < 40 and body_html_length < 2000:
+        flags.append('very_low_content')
+    if scroll_height <= max(viewport_height + 20, 200) and body_text_length < 80 and main_like_elements == 0:
+        flags.append('tiny_page_height')
+    if blocking_overlay_count > 0 and body_text_length < 200:
+        flags.append('likely_blocking_overlay')
+    if not (page_title or '').strip():
+        flags.append('empty_title')
+
+    return flags
+
+
+async def run_additional_stabilization_pass(page: Page, timing_profile: Dict[str, int]) -> None:
+    """Run one extra settling pass for pages that still look suspicious."""
+    await hide_overlays_and_disable_animations(page)
+    await page.wait_for_timeout(timing_profile['final_wait_ms'])
+    await scroll_to_bottom(page, timing_profile)
+    try:
+        await page.wait_for_load_state(
+            'networkidle',
+            timeout=timing_profile['post_scroll_networkidle_timeout_ms'],
+        )
+    except Exception:
+        pass
+    await wait_for_stable_page_height(
+        page,
+        checks_needed=4,
+        interval_ms=timing_profile['stable_height_interval_ms'],
+        max_checks=12,
+    )
+    await page.wait_for_timeout(timing_profile['final_wait_ms'])
 
 
 async def wait_for_stable_page_height(
@@ -440,7 +617,7 @@ async def process_url(
     url: str,
     viewports: List[Tuple[str, int, int]],
     run_dir: str,
-    report: List[Dict[str, Optional[str]]],
+    report: List[Dict[str, Any]],
     sitemap_source: str,
     retries: int,
     timing_profile: Dict[str, int],
@@ -462,6 +639,9 @@ async def process_url(
         status_code: Optional[int] = None
         page_title: Optional[str] = None
         error_msg: Optional[str] = None
+        result_flags: List[str] = []
+        page_state: Dict[str, Any] = {}
+        extra_stabilization_used = False
         screenshot_path = os.path.join(page_dir, f"{vp_name}.png")
         attempt = 0
         context = None
@@ -500,9 +680,25 @@ async def process_url(
                 except Exception:
                     pass
                 await page.wait_for_timeout(timing_profile['final_wait_ms'])
+                page_state = await collect_page_state(page)
+                result_flags = analyze_page_state(url, final_url, status_code, page_title, page_state)
+                if any(flag in SECOND_PASS_FLAGS for flag in result_flags):
+                    extra_stabilization_used = True
+                    print(
+                        f"[{page_index}/{total_pages}] {slug} [{vp_name}] looked unstable "
+                        f"({', '.join(result_flags)}). Applying an extra stabilization pass."
+                    )
+                    await run_additional_stabilization_pass(page, timing_profile)
+                    page_state = await collect_page_state(page)
+                    result_flags = analyze_page_state(url, final_url, status_code, page_title, page_state)
                 await page.screenshot(path=screenshot_path, full_page=True)
                 success = True
                 page_successes += 1
+                if result_flags:
+                    print(
+                        f"[{page_index}/{total_pages}] {slug} [{vp_name}] flags: "
+                        f"{', '.join(result_flags)}"
+                    )
                 print(f"[{page_index}/{total_pages}] Saved {vp_name}: {os.path.relpath(screenshot_path, run_dir)}")
             except Exception as exc:
                 error_msg = str(exc)
@@ -536,6 +732,9 @@ async def process_url(
             'viewport': vp_name,
             'sitemap_source': sitemap_source,
             'screenshot_path': os.path.relpath(screenshot_path, run_dir) if success else '',
+            'redirected': 'yes' if has_meaningful_redirect(url, final_url) else 'no',
+            'result_flags': ', '.join(result_flags),
+            'extra_stabilization_pass': 'yes' if extra_stabilization_used else 'no',
             'error': error_msg,
         })
 
@@ -545,7 +744,7 @@ async def process_url(
     )
 
 
-def generate_html_index(report: List[Dict[str, Optional[str]]], run_dir: str, date_str: str) -> None:
+def generate_html_index(report: List[Dict[str, Any]], run_dir: str, date_str: str) -> None:
     """Generate a simple HTML index to browse the captured screenshots."""
     index_path = os.path.join(run_dir, 'index.html')
     page_entries: Dict[str, List[Dict[str, str]]] = {}
@@ -726,7 +925,7 @@ async def run_for_site(
             'reason': 'aborted_by_user',
         }
 
-    report: List[Dict[str, Optional[str]]] = []
+    report: List[Dict[str, Any]] = []
     if args.concurrency > 1:
         semaphore = asyncio.Semaphore(args.concurrency)
 
@@ -756,7 +955,11 @@ async def run_for_site(
     with open(paths['report_csv'], 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=['url', 'final_url', 'status', 'http_status', 'page_title', 'viewport', 'sitemap_source', 'screenshot_path', 'error']
+            fieldnames=[
+                'url', 'final_url', 'status', 'http_status', 'page_title', 'viewport',
+                'sitemap_source', 'screenshot_path', 'redirected', 'result_flags',
+                'extra_stabilization_pass', 'error'
+            ]
         )
         writer.writeheader()
         for row in report:
