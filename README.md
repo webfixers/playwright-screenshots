@@ -48,6 +48,8 @@ Once the prompt shows `(.venv)`, you are ready to run the script.
 
 The entry point is `screenshot.py`. You can provide a full URL, a bare domain like `example.com`, or a sitemap path like `example.com/sitemap.xml`, and then choose either the `basic` or `extended` screenshot set.
 
+For batch runs, you can also provide a text file with one website or sitemap entry per line.
+
 ### Basic example
 
 ```bash
@@ -80,6 +82,21 @@ python screenshot.py --url https://example.com/sitemap.xml --variant basic --inc
 
 ```bash
 python screenshot.py --url https://example.com/sitemap.xml --variant basic --max-urls 10 --generate-index --no-open
+```
+
+### Example with a website list file
+
+```bash
+python screenshot.py --url-file sites.txt --variant basic --generate-index
+```
+
+Example `sites.txt`:
+
+```text
+# One website or sitemap per line
+example.com
+www.example.org
+https://site.nl/sitemap.xml
 ```
 
 ### Example with your current workflow
@@ -119,8 +136,11 @@ The `.command` launcher now also supports a few safe extra options:
 - optional exclude filters
 - an optional max URL limit for smaller sample runs
 - disabling automatic opening after the run
+- single-site or list-file input mode
 
 For long pages, the script now scrolls through the page, waits for the document height to settle, and returns to the top before taking the full-page screenshot. This improves capture stability on pages with lazy-loaded sections.
+
+In batch mode, the script processes sites one by one and prints a short summary at the end. Automatic opening is skipped in batch mode to avoid opening many Finder windows or browser tabs.
 
 ## Output structure
 
@@ -144,6 +164,7 @@ screenshots/
 ## Command reference
 
 - `--url`: root URL, bare domain, or sitemap URL
+- `--url-file`: path to a text file with one website or sitemap entry per line
 - `--variant basic`: practical reduced screenshot set
 - `--variant extended`: more detailed breakpoint coverage
 - `--include`: only process URLs containing one or more path fragments

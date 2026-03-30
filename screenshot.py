@@ -185,6 +185,18 @@ def build_sitemap_candidate_urls(user_input: str) -> List[str]:
     return candidates
 
 
+def load_url_inputs(file_path: str) -> List[str]:
+    """Load website inputs from a text file, ignoring blank lines and comments."""
+    urls: List[str] = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            urls.append(line)
+    return urls
+
+
 def is_relevant(url: str) -> bool:
     """Return True if the URL should be processed.
 
@@ -601,9 +613,154 @@ def open_output_target(run_dir: str, index_path: str, should_open_index: bool, n
         print(f"Could not open output automatically: {exc}", file=sys.stderr)
 
 
+async def run_for_site(
+    browser: Browser,
+    raw_input_url: str,
+    args: argparse.Namespace,
+    viewports: List[Tuple[str, int, int]],
+    date_str: str,
+    include_terms: List[str],
+    exclude_terms: List[str],
+    should_open_output: bool,
+    site_index: int,
+    total_sites: int,
+) -> Dict[str, object]:
+    """Run the screenshot flow for a single site input."""
+    normalized_input_url = normalize_input_url(raw_input_url)
+    paths = build_output_paths(args.output, normalized_input_url, date_str)
+    os.makedirs(paths['domain_dir'], exist_ok=True)
+    os.makedirs(paths['run_dir'], exist_ok=True)
+
+    site_label = f"[Site {site_index}/{total_sites}]"
+    print()
+    print(f"{site_label} Starting input: {raw_input_url}")
+    print(f"{site_label} Output folder for this domain: {paths['domain_dir']}")
+    print(f"{site_label} Run folder for today: {paths['run_dir']}")
+    if normalized_input_url != raw_input_url.strip():
+        print(f"{site_label} Normalized input: {normalized_input_url}")
+
+    urls: List[str] = []
+    sitemap_source = normalized_input_url
+    if args.only_failed:
+        report_path = paths['report_json']
+        if not os.path.exists(report_path):
+            print(f"{site_label} No report.json found for this domain. Cannot use --only-failed.", file=sys.stderr)
+            return {
+                'input': raw_input_url,
+                'normalized_input': normalized_input_url,
+                'domain': domain_slug(normalized_input_url),
+                'status': 'failed',
+                'pages_processed': 0,
+                'reason': 'missing_report',
+            }
+        with open(report_path, 'r', encoding='utf-8') as f:
+            past_report = json.load(f)
+        failed_urls: Set[str] = {entry['url'] for entry in past_report if entry['status'] != 'success'}
+        urls = sorted(failed_urls)
+        print(f"{site_label} Rerunning {len(urls)} previously failed URLs for this domain...")
+    else:
+        print(f"{site_label} Fetching sitemap(s)...")
+        sitemap_urls, resolved_sitemap_source = await parse_sitemaps(normalized_input_url)
+        if resolved_sitemap_source:
+            sitemap_source = resolved_sitemap_source
+            print(f"{site_label} Using sitemap source: {resolved_sitemap_source}")
+        print(f"{site_label} Found {len(sitemap_urls)} URLs in sitemap(s).")
+        urls = sorted(sitemap_urls)
+
+    urls, filter_summary = apply_url_filters(urls, include_terms, exclude_terms, args.max_urls)
+
+    total_pages = len(urls)
+    if total_pages == 0:
+        print(f"{site_label} No URLs to process.", file=sys.stderr)
+        return {
+            'input': raw_input_url,
+            'normalized_input': normalized_input_url,
+            'domain': domain_slug(normalized_input_url),
+            'status': 'failed',
+            'pages_processed': 0,
+            'reason': 'no_urls',
+        }
+    if not preview_urls(urls, args.only_failed, include_terms, exclude_terms, filter_summary, args.max_urls):
+        return {
+            'input': raw_input_url,
+            'normalized_input': normalized_input_url,
+            'domain': domain_slug(normalized_input_url),
+            'status': 'skipped',
+            'pages_processed': 0,
+            'reason': 'aborted_by_user',
+        }
+
+    report: List[Dict[str, Optional[str]]] = []
+    if args.concurrency > 1:
+        semaphore = asyncio.Semaphore(args.concurrency)
+
+        async def worker(page_index: int, page_url: str) -> None:
+            async with semaphore:
+                await process_url(
+                    browser, page_url, viewports, paths['run_dir'], report,
+                    sitemap_source, args.retries, page_index, total_pages
+                )
+
+        tasks = [
+            asyncio.create_task(worker(index, page_url))
+            for index, page_url in enumerate(urls, start=1)
+        ]
+        await asyncio.gather(*tasks)
+    else:
+        for index, page_url in enumerate(urls, start=1):
+            await process_url(
+                browser, page_url, viewports, paths['run_dir'], report,
+                sitemap_source, args.retries, index, total_pages
+            )
+
+    with open(paths['report_json'], 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"{site_label} Wrote JSON report to {paths['report_json']}")
+
+    with open(paths['report_csv'], 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=['url', 'final_url', 'status', 'http_status', 'page_title', 'viewport', 'sitemap_source', 'screenshot_path', 'error']
+        )
+        writer.writeheader()
+        for row in report:
+            writer.writerow(row)
+    print(f"{site_label} Wrote CSV report to {paths['report_csv']}")
+
+    if args.generate_index:
+        generate_html_index(report, paths['run_dir'], date_str)
+
+    if should_open_output:
+        open_output_target(paths['run_dir'], paths['index_html'], args.generate_index, args.no_open)
+
+    status_counts = Counter(entry['status'] for entry in report)
+    successful_pages = len({entry['url'] for entry in report if entry['status'] == 'success'})
+    failed_pages = len({entry['url'] for entry in report if entry['status'] == 'failed'})
+    print(f"{site_label} Run complete.")
+    print(
+        f"{site_label} Pages processed: {total_pages} | Pages with at least one successful viewport: {successful_pages} | "
+        f"Pages with failed viewports: {failed_pages}"
+    )
+    print(
+        f"{site_label} Viewport results -> success: {status_counts.get('success', 0)}, failed: {status_counts.get('failed', 0)}"
+    )
+
+    return {
+        'input': raw_input_url,
+        'normalized_input': normalized_input_url,
+        'domain': domain_slug(normalized_input_url),
+        'status': 'success',
+        'pages_processed': total_pages,
+        'successful_pages': successful_pages,
+        'failed_pages': failed_pages,
+    }
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Website screenshotter using Playwright.')
-    parser.add_argument('--url', required=True, help='Root URL, bare domain, or sitemap URL (e.g. example.com or https://example.com/sitemap.xml).')
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--url', help='Root URL, bare domain, or sitemap URL (e.g. example.com or https://example.com/sitemap.xml).')
+    input_group.add_argument('--url-file', help='Path to a text file with one website or sitemap entry per line.')
     parser.add_argument('--variant', choices=['basic', 'extended'], default='basic',
                         help='Screenshot set to use (default: basic).')
     parser.add_argument('--output', default='screenshots', help='Base output directory for screenshots and reports.')
@@ -631,7 +788,9 @@ async def main() -> None:
     if args.max_urls is not None and args.max_urls < 1:
         parser.error('--max-urls must be 1 or higher.')
 
-    normalized_input_url = normalize_input_url(args.url)
+    if args.url_file and not os.path.exists(args.url_file):
+        parser.error(f'--url-file not found: {args.url_file}')
+
     include_terms = parse_filter_terms(args.include)
     exclude_terms = parse_filter_terms(args.exclude)
 
@@ -653,102 +812,60 @@ async def main() -> None:
     viewports = basic_viewports if args.variant == 'basic' else extended_viewports
     date_str = datetime.date.today().strftime('%Y-%m-%d')
 
-    paths = build_output_paths(args.output, normalized_input_url, date_str)
-    os.makedirs(paths['domain_dir'], exist_ok=True)
-    os.makedirs(paths['run_dir'], exist_ok=True)
-
-    print(f"Output folder for this domain: {paths['domain_dir']}")
-    print(f"Run folder for today: {paths['run_dir']}")
-    if normalized_input_url != args.url.strip():
-        print(f"Normalized input: {normalized_input_url}")
-
-    urls: List[str] = []
-    sitemap_source = normalized_input_url
-    if args.only_failed:
-        report_path = paths['report_json']
-        if not os.path.exists(report_path):
-            print('No report.json found for this domain. Cannot use --only-failed.', file=sys.stderr)
-            return
-        with open(report_path, 'r', encoding='utf-8') as f:
-            past_report = json.load(f)
-        failed_urls: Set[str] = {entry['url'] for entry in past_report if entry['status'] != 'success'}
-        urls = sorted(failed_urls)
-        print(f'Rerunning {len(urls)} previously failed URLs for this domain...')
+    if args.url_file:
+        site_inputs = load_url_inputs(args.url_file)
+        if not site_inputs:
+            parser.error(f'--url-file contains no usable entries: {args.url_file}')
+        print(f"Loaded {len(site_inputs)} site entries from {args.url_file}")
     else:
-        print('Fetching sitemap(s)...')
-        sitemap_urls, resolved_sitemap_source = await parse_sitemaps(normalized_input_url)
-        if resolved_sitemap_source:
-            sitemap_source = resolved_sitemap_source
-            print(f'Using sitemap source: {resolved_sitemap_source}')
-        print(f'Found {len(sitemap_urls)} URLs in sitemap(s).')
-        urls = sorted(sitemap_urls)
+        site_inputs = [args.url]
 
-    urls, filter_summary = apply_url_filters(urls, include_terms, exclude_terms, args.max_urls)
+    should_open_output = len(site_inputs) == 1
+    if len(site_inputs) > 1 and not args.no_open:
+        print('Batch mode detected: automatic opening is skipped to avoid opening many windows.')
 
-    total_pages = len(urls)
-    if total_pages == 0:
-        print('No URLs to process.', file=sys.stderr)
-        return
-    if not preview_urls(urls, args.only_failed, include_terms, exclude_terms, filter_summary, args.max_urls):
-        return
-
-    report: List[Dict[str, Optional[str]]] = []
+    site_results: List[Dict[str, object]] = []
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        if args.concurrency > 1:
-            semaphore = asyncio.Semaphore(args.concurrency)
-
-            async def worker(page_index: int, page_url: str) -> None:
-                async with semaphore:
-                    await process_url(
-                        browser, page_url, viewports, paths['run_dir'], report,
-                        sitemap_source, args.retries, page_index, total_pages
-                    )
-
-            tasks = [
-                asyncio.create_task(worker(index, page_url))
-                for index, page_url in enumerate(urls, start=1)
-            ]
-            await asyncio.gather(*tasks)
-        else:
-            for index, page_url in enumerate(urls, start=1):
-                await process_url(
-                    browser, page_url, viewports, paths['run_dir'], report,
-                    sitemap_source, args.retries, index, total_pages
+        try:
+            for site_index, site_input in enumerate(site_inputs, start=1):
+                result = await run_for_site(
+                    browser,
+                    site_input,
+                    args,
+                    viewports,
+                    date_str,
+                    include_terms,
+                    exclude_terms,
+                    should_open_output,
+                    site_index,
+                    len(site_inputs),
                 )
-        await browser.close()
+                site_results.append(result)
+                if result['status'] == 'skipped':
+                    print('Batch run aborted by user.')
+                    break
+        finally:
+            await browser.close()
 
-    with open(paths['report_json'], 'w', encoding='utf-8') as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f"Wrote JSON report to {paths['report_json']}")
-
-    with open(paths['report_csv'], 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=['url', 'final_url', 'status', 'http_status', 'page_title', 'viewport', 'sitemap_source', 'screenshot_path', 'error']
+    if len(site_results) > 1:
+        success_count = sum(1 for result in site_results if result['status'] == 'success')
+        failed_count = sum(1 for result in site_results if result['status'] == 'failed')
+        skipped_count = sum(1 for result in site_results if result['status'] == 'skipped')
+        total_pages = sum(int(result.get('pages_processed', 0)) for result in site_results)
+        print()
+        print('Batch summary:')
+        print(
+            f"Sites processed: {len(site_results)} | Successful: {success_count} | "
+            f"Failed: {failed_count} | Skipped: {skipped_count}"
         )
-        writer.writeheader()
-        for row in report:
-            writer.writerow(row)
-    print(f"Wrote CSV report to {paths['report_csv']}")
-
-    if args.generate_index:
-        generate_html_index(report, paths['run_dir'], date_str)
-
-    open_output_target(paths['run_dir'], paths['index_html'], args.generate_index, args.no_open)
-
-    status_counts = Counter(entry['status'] for entry in report)
-    successful_pages = len({entry['url'] for entry in report if entry['status'] == 'success'})
-    failed_pages = len({entry['url'] for entry in report if entry['status'] == 'failed'})
-    print('Run complete.')
-    print(
-        f"Pages processed: {total_pages} | Pages with at least one successful viewport: {successful_pages} | "
-        f"Pages with failed viewports: {failed_pages}"
-    )
-    print(
-        f"Viewport results -> success: {status_counts.get('success', 0)}, failed: {status_counts.get('failed', 0)}"
-    )
+        print(f"Total pages processed across sites: {total_pages}")
+        for result in site_results:
+            print(
+                f" - {result['domain']}: {result['status']} "
+                f"({result.get('pages_processed', 0)} pages)"
+            )
 
 
 if __name__ == '__main__':

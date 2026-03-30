@@ -22,13 +22,54 @@ source .venv/bin/activate || exit 1
 echo "Screenshot runner"
 echo
 
-read "SITEMAP_URL?Enter website or sitemap (for example example.com or example.com/sitemap.xml): "
+echo "Choose input mode:"
+echo "1) single website"
+echo "2) website list file"
+read "INPUT_MODE_CHOICE?Enter 1 or 2 [1]: "
 
-if [[ -z "$SITEMAP_URL" ]]; then
+case "$INPUT_MODE_CHOICE" in
+  ""|1)
+    INPUT_MODE="single"
+    ;;
+  2)
+    INPUT_MODE="file"
+    ;;
+  *)
+    echo
+    echo "Invalid choice. Press Enter to close..."
+    read
+    exit 1
+    ;;
+esac
+
+echo
+if [[ "$INPUT_MODE" == "single" ]]; then
+  read "SITEMAP_URL?Enter website or sitemap (for example example.com or example.com/sitemap.xml): "
+else
+  read "URL_FILE?Enter path to website list file: "
+fi
+
+if [[ "$INPUT_MODE" == "single" ]] && [[ -z "$SITEMAP_URL" ]]; then
   echo
-  echo "No sitemap URL entered. Press Enter to close..."
+  echo "No website entered. Press Enter to close..."
   read
   exit 1
+fi
+
+if [[ "$INPUT_MODE" == "file" ]]; then
+  if [[ -z "$URL_FILE" ]]; then
+    echo
+    echo "No list file entered. Press Enter to close..."
+    read
+    exit 1
+  fi
+  if [[ ! -f "$URL_FILE" ]]; then
+    echo
+    echo "List file not found: $URL_FILE"
+    echo "Press Enter to close..."
+    read
+    exit 1
+  fi
 fi
 
 echo
@@ -113,6 +154,13 @@ esac
 echo
 echo "Running variant: $VARIANT"
 echo "Only failed: $ONLY_FAILED"
+echo "Input mode: $INPUT_MODE"
+
+if [[ "$INPUT_MODE" == "single" ]]; then
+  echo "Website input: $SITEMAP_URL"
+else
+  echo "List file: $URL_FILE"
+fi
 
 if [[ -n "$INCLUDE_FILTERS" ]]; then
   echo "Include filters: $INCLUDE_FILTERS"
@@ -128,7 +176,13 @@ fi
 
 echo
 
-COMMAND=(python screenshot.py --url "$SITEMAP_URL" --variant "$VARIANT" --generate-index)
+COMMAND=(python screenshot.py --variant "$VARIANT" --generate-index)
+
+if [[ "$INPUT_MODE" == "single" ]]; then
+  COMMAND+=(--url "$SITEMAP_URL")
+else
+  COMMAND+=(--url-file "$URL_FILE")
+fi
 
 if [[ "$ONLY_FAILED" == "true" ]]; then
   COMMAND+=(--only-failed)
