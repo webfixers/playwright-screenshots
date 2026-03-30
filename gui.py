@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import signal
 import subprocess
 import threading
 import webbrowser
@@ -133,6 +134,10 @@ HTML_PAGE = """<!DOCTYPE html>
     button.secondary {
       background: var(--accent-2);
       color: var(--accent);
+    }
+    button.warning {
+      background: #f5e4e2;
+      color: var(--danger);
     }
     button.ghost {
       background: #eef1eb;
@@ -263,6 +268,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="field full">
           <div class="button-row">
             <button class="primary" type="submit" id="start-button">Start screenshots</button>
+            <button class="warning" type="button" id="stop-button" disabled>Stop run</button>
             <button class="secondary" type="button" id="open-output-button" disabled>Open last output</button>
           </div>
         </div>
@@ -287,6 +293,7 @@ HTML_PAGE = """<!DOCTYPE html>
   <script>
     const form = document.getElementById('run-form');
     const startButton = document.getElementById('start-button');
+    const stopButton = document.getElementById('stop-button');
     const openOutputButton = document.getElementById('open-output-button');
     const logOutput = document.getElementById('log-output');
     const statusText = document.getElementById('status-text');
@@ -327,6 +334,7 @@ HTML_PAGE = """<!DOCTYPE html>
       statusText.textContent = state.status_text || 'Ready';
       statusMeta.textContent = state.status_meta || 'No run started yet.';
       startButton.disabled = !!state.running;
+      stopButton.disabled = !state.running;
       openOutputButton.disabled = !state.can_open_output;
       statusDot.className = 'dot ' + (state.running ? 'running' : (state.last_return_code === 0 ? 'finished' : (state.last_return_code === null ? '' : 'failed')));
     }
@@ -366,6 +374,15 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!response.ok) {
         alert(payload.error || 'Could not open output.');
       }
+    });
+
+    stopButton.addEventListener('click', async () => {
+      const response = await fetch('/api/stop', {method: 'POST'});
+      const payload = await response.json();
+      if (!response.ok) {
+        alert(payload.error || 'Could not stop the run.');
+      }
+      setTimeout(pollState, 150);
     });
 
     chooseFileButton.addEventListener('click', async () => {
@@ -468,6 +485,12 @@ class AppState:
             self.status_meta = ' '.join(command)
             self.log_text += '\n' + '=' * 72 + '\n'
             self.log_text += 'Starting command:\n' + ' '.join(command) + '\n\n'
+
+    def set_stopping(self) -> None:
+        with self.lock:
+            self.status_text = 'Stopping'
+            self.status_meta = 'Stopping screenshot run...'
+            self.log_text += '\nStopping screenshot run...\n'
 
     def finish(self, return_code: int, output_target: Optional[Path]) -> None:
         with self.lock:
@@ -613,6 +636,7 @@ def start_run(state: AppState, payload: Dict[str, Any]) -> tuple[bool, str]:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     except Exception as exc:
         return False, f'Could not start the screenshot run: {exc}'
@@ -628,6 +652,39 @@ def start_run(state: AppState, payload: Dict[str, Any]) -> tuple[bool, str]:
         state.finish(return_code, output_target if output_target and output_target.exists() else None)
 
     threading.Thread(target=worker, daemon=True).start()
+    return True, ''
+
+
+def stop_run(state: AppState) -> tuple[bool, str]:
+    """Stop the active screenshot run if one is still running."""
+    with state.lock:
+        process = state.process
+    if process is None:
+        return False, 'No screenshot run is active.'
+
+    state.set_stopping()
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            process.terminate()
+        except Exception as exc:
+            return False, f'Could not stop the screenshot run: {exc}'
+
+    def force_kill_later() -> None:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+    threading.Thread(target=force_kill_later, daemon=True).start()
     return True, ''
 
 
@@ -690,6 +747,14 @@ class AppHandler(BaseHTTPRequestHandler):
             ok, error = open_path(Path(str(target)))
             if not ok:
                 self._send_json({'error': error}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json({'ok': True})
+            return
+
+        if self.path == '/api/stop':
+            ok, error = stop_run(self.app_state)
+            if not ok:
+                self._send_json({'error': error}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({'ok': True})
             return
