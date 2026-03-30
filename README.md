@@ -68,6 +68,18 @@ python screenshot.py --url https://example.com/sitemap.xml --variant basic --gen
 
 On macOS in an interactive Terminal session, the script will automatically open the generated `index.html` after a successful run. Without `--generate-index`, it opens the dated run folder instead.
 
+### Example with include/exclude filters
+
+```bash
+python screenshot.py --url https://example.com/sitemap.xml --variant basic --include /blog/,/news/ --exclude /tag/,/author/
+```
+
+### Example with a safer sample run
+
+```bash
+python screenshot.py --url https://example.com/sitemap.xml --variant basic --max-urls 10 --generate-index --no-open
+```
+
 ### Example with your current workflow
 
 ```bash
@@ -98,6 +110,14 @@ Before screenshots start, the script also shows a short preview of the URLs it i
 
 After a successful run on macOS, the script also opens the output automatically unless you disable that behavior with `--no-open`.
 
+The `.command` launcher now also supports a few safe extra options:
+
+- rerun only previously failed URLs
+- optional include filters
+- optional exclude filters
+- an optional max URL limit for smaller sample runs
+- disabling automatic opening after the run
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
@@ -122,6 +142,9 @@ screenshots/
 - `--url`: root URL or sitemap URL
 - `--variant basic`: practical reduced screenshot set
 - `--variant extended`: more detailed breakpoint coverage
+- `--include`: only process URLs containing one or more path fragments
+- `--exclude`: skip URLs containing one or more path fragments
+- `--max-urls`: process at most this many URLs after filtering
 - `--generate-index`: creates an HTML gallery of screenshots
 - `--no-open`: do not open the output automatically after a successful run
 - `--output`: custom output directory

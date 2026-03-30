@@ -127,6 +127,43 @@ def is_relevant(url: str) -> bool:
     return True
 
 
+def parse_filter_terms(raw_terms: Optional[List[str]]) -> List[str]:
+    """Normalize include/exclude filter terms from repeated or comma-separated input."""
+    terms: List[str] = []
+    for raw_term in raw_terms or []:
+        for part in raw_term.split(','):
+            term = part.strip().lower()
+            if term and term not in terms:
+                terms.append(term)
+    return terms
+
+
+def apply_url_filters(
+    urls: List[str],
+    include_terms: List[str],
+    exclude_terms: List[str],
+    max_urls: Optional[int],
+) -> Tuple[List[str], Dict[str, int]]:
+    """Apply include/exclude filtering and optional max URL limit."""
+    filtered_urls: List[str] = []
+
+    for url in urls:
+        lowered_url = url.lower()
+        if include_terms and not any(term in lowered_url for term in include_terms):
+            continue
+        if exclude_terms and any(term in lowered_url for term in exclude_terms):
+            continue
+        filtered_urls.append(url)
+
+    selected_urls = filtered_urls[:max_urls] if max_urls else filtered_urls
+    return selected_urls, {
+        'original_total': len(urls),
+        'after_filters': len(filtered_urls),
+        'filtered_out': len(urls) - len(filtered_urls),
+        'limited_out': len(filtered_urls) - len(selected_urls),
+    }
+
+
 async def fetch_xml(session: aiohttp.ClientSession, url: str) -> str:
     """Fetch XML content from a URL with retries."""
     retries = 3
@@ -362,13 +399,29 @@ def generate_html_index(report: List[Dict[str, Optional[str]]], run_dir: str, da
     print(f"Generated HTML index at {index_path}")
 
 
-def preview_urls(urls: List[str], only_failed: bool, large_run_threshold: int = 100) -> bool:
+def preview_urls(
+    urls: List[str],
+    only_failed: bool,
+    include_terms: List[str],
+    exclude_terms: List[str],
+    filter_summary: Dict[str, int],
+    max_urls: Optional[int],
+    large_run_threshold: int = 100,
+) -> bool:
     """Print a short pre-run summary and confirm very large runs."""
     total_urls = len(urls)
     source_label = 'previously failed URLs' if only_failed else 'URLs from sitemap'
     preview_count = min(5, total_urls)
 
     print(f"Preparing to process {total_urls} {source_label}.")
+    if include_terms:
+        print(f"Include filters: {', '.join(include_terms)}")
+    if exclude_terms:
+        print(f"Exclude filters: {', '.join(exclude_terms)}")
+    if filter_summary['filtered_out'] > 0:
+        print(f"Filtered out {filter_summary['filtered_out']} URLs with include/exclude rules.")
+    if max_urls is not None and filter_summary['limited_out'] > 0:
+        print(f"Limiting this run to the first {max_urls} URLs after filtering.")
     if preview_count > 0:
         print('URL preview:')
         for preview_url in urls[:preview_count]:
@@ -413,6 +466,12 @@ async def main() -> None:
                         help='Screenshot set to use (default: basic).')
     parser.add_argument('--output', default='screenshots', help='Base output directory for screenshots and reports.')
     parser.add_argument('--retries', type=int, default=2, help='Number of retries for each page/viewport (default: 2).')
+    parser.add_argument('--include', action='append',
+                        help='Only process URLs containing these path fragments. Repeat or separate multiple values with commas.')
+    parser.add_argument('--exclude', action='append',
+                        help='Skip URLs containing these path fragments. Repeat or separate multiple values with commas.')
+    parser.add_argument('--max-urls', type=int,
+                        help='Process at most this many URLs after filtering. Useful for safer sample runs.')
     parser.add_argument('--only-failed', action='store_true',
                         help='Reprocess only pages marked as failed in the last report.json file for this domain.')
     parser.add_argument('--generate-index', action='store_true',
@@ -422,6 +481,16 @@ async def main() -> None:
     parser.add_argument('--concurrency', type=int, default=1,
                         help='Number of pages to process concurrently (default: 1). Concurrency >1 may increase memory usage.')
     args = parser.parse_args()
+
+    if args.retries < 0:
+        parser.error('--retries must be 0 or higher.')
+    if args.concurrency < 1:
+        parser.error('--concurrency must be 1 or higher.')
+    if args.max_urls is not None and args.max_urls < 1:
+        parser.error('--max-urls must be 1 or higher.')
+
+    include_terms = parse_filter_terms(args.include)
+    exclude_terms = parse_filter_terms(args.exclude)
 
     basic_viewports = [
         ('desktop', 1400, 900),
@@ -466,11 +535,13 @@ async def main() -> None:
         print(f'Found {len(sitemap_urls)} URLs in sitemap(s).')
         urls = sorted(sitemap_urls)
 
+    urls, filter_summary = apply_url_filters(urls, include_terms, exclude_terms, args.max_urls)
+
     total_pages = len(urls)
     if total_pages == 0:
         print('No URLs to process.', file=sys.stderr)
         return
-    if not preview_urls(urls, args.only_failed):
+    if not preview_urls(urls, args.only_failed, include_terms, exclude_terms, filter_summary, args.max_urls):
         return
 
     report: List[Dict[str, Optional[str]]] = []
