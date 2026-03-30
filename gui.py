@@ -673,7 +673,7 @@ def stop_run(state: AppState) -> tuple[bool, str]:
     state.set_stopping()
 
     try:
-        process.send_signal(signal.SIGINT)
+        process.terminate()
     except Exception:
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -682,7 +682,7 @@ def stop_run(state: AppState) -> tuple[bool, str]:
 
     def force_kill_later() -> None:
         try:
-            process.wait(timeout=6)
+            process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
