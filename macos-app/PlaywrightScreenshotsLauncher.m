@@ -27,7 +27,7 @@
 
 - (NSColor *)buttonBackgroundColorForRole:(NSString *)role enabled:(BOOL)enabled {
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.94 green:0.94 blue:0.92 alpha:1.0];
+        return [NSColor colorWithCalibratedRed:0.91 green:0.92 blue:0.90 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
         return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
@@ -40,7 +40,7 @@
 
 - (NSColor *)buttonBorderColorForRole:(NSString *)role enabled:(BOOL)enabled {
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.82 green:0.84 blue:0.80 alpha:1.0];
+        return [NSColor colorWithCalibratedRed:0.71 green:0.75 blue:0.71 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
         return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
@@ -53,7 +53,7 @@
 
 - (NSColor *)buttonTitleColorForRole:(NSString *)role enabled:(BOOL)enabled {
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.53 green:0.57 blue:0.55 alpha:1.0];
+        return [NSColor colorWithCalibratedRed:0.38 green:0.44 blue:0.41 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
         return [NSColor whiteColor];
@@ -204,7 +204,7 @@
         @"stop": self.stopButton,
         @"reveal": self.revealButton,
     };
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[start(>=90)]-12-[open(>=90)]-12-[stop(>=90)]-12-[reveal(>=150)]"
+    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[start(118)]-12-[open(118)]-12-[stop(118)]-12-[reveal(170)]"
                                                                                      options:NSLayoutFormatAlignAllCenterY
                                                                                      metrics:nil
                                                                                        views:buttonViews]];
@@ -232,6 +232,7 @@
 - (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
     button.bordered = NO;
+    button.buttonType = NSButtonTypeMomentaryPushIn;
     button.wantsLayer = YES;
     button.layer.cornerRadius = 9.0;
     button.layer.borderWidth = 1.0;
@@ -249,7 +250,9 @@
         NSForegroundColorAttributeName: [self buttonTitleColorForRole:role enabled:enabled],
         NSFontAttributeName: button.font ?: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
     };
-    button.attributedTitle = [[NSAttributedString alloc] initWithString:button.title attributes:attributes];
+    NSAttributedString *styledTitle = [[NSAttributedString alloc] initWithString:button.title attributes:attributes];
+    button.attributedTitle = styledTitle;
+    button.attributedAlternateTitle = styledTitle;
 }
 
 - (NSURL *)projectRootURL {
@@ -497,6 +500,10 @@
 
 - (void)updateButtons {
     BOOL running = (self.serverTask != nil && self.serverTask.isRunning);
+    self.startButton.title = running ? @"GUI Running" : @"Start GUI";
+    self.openButton.title = @"Open GUI";
+    self.stopButton.title = @"Stop GUI";
+    self.revealButton.title = @"Open Project Folder";
     [self applyStyleToButton:self.startButton role:@"primary" enabled:!running];
     [self applyStyleToButton:self.openButton role:@"secondary" enabled:(self.serverURL != nil)];
     [self applyStyleToButton:self.stopButton role:@"danger" enabled:running];
