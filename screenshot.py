@@ -349,8 +349,7 @@ async def hide_overlays_and_disable_animations(page: Page) -> None:
         '[id*="cookie"]', '[class*="cookie"]', '[id*="gdpr"]', '[class*="gdpr"]',
         '[class*="modal"]', '[id*="modal"]', '[class*="popup"]', '[id*="popup"]',
         '[class*="newsletter"]', '[id*="newsletter"]', '[class*="subscribe"]',
-        '[id*="subscribe"]', '[class*="chat"]', '[id*="chat"]', '[class*="sticky"]',
-        '[class*="banner"]', '[id*="banner"]', '[class*="floating"]', '[id*="floating"]'
+        '[id*="subscribe"]', '[class*="chat"]', '[id*="chat"]'
     ]
     overlay_css = '\n'.join(
         f"{sel} {{ display: none !important; visibility: hidden !important; }}"
