@@ -3,8 +3,8 @@
 SCRIPT_DIR="${0:A:h}"
 cd "$SCRIPT_DIR" || exit 1
 
-if [[ ! -x "/usr/bin/python3" ]]; then
-  echo "Missing macOS system Python at /usr/bin/python3"
+if [[ ! -f ".venv/bin/activate" ]]; then
+  echo "Missing virtual environment at .venv/bin/activate"
   echo "Press Enter to close..."
   read
   exit 1
@@ -17,4 +17,5 @@ if [[ ! -f "gui.py" ]]; then
   exit 1
 fi
 
-/usr/bin/python3 gui.py
+source .venv/bin/activate || exit 1
+python gui.py

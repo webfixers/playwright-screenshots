@@ -1,25 +1,396 @@
 #!/usr/bin/env python3
-"""Small Tkinter GUI for the Playwright screenshot tool."""
+"""Small local web GUI for the Playwright screenshot tool."""
 
 from __future__ import annotations
 
 import datetime
+import json
 import os
-import queue
 import subprocess
-import sys
 import threading
+import webbrowser
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-try:
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-    from tkinter.scrolledtext import ScrolledText
-except ImportError as exc:  # pragma: no cover - only relevant on broken Python installs
-    print(f"Tkinter is not available in this Python environment: {exc}", file=sys.stderr)
-    raise SystemExit(1)
+
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playwright Screenshots</title>
+  <style>
+    :root {
+      --bg: #f3f4ef;
+      --panel: #fffdf7;
+      --ink: #21302b;
+      --muted: #64726d;
+      --line: #d8ddd5;
+      --accent: #165d4a;
+      --accent-2: #e7f3ee;
+      --danger: #8c2f39;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(22, 93, 74, 0.08), transparent 32%),
+        linear-gradient(180deg, #fbfaf5 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    .shell {
+      width: min(1100px, calc(100% - 32px));
+      margin: 24px auto;
+      display: grid;
+      gap: 18px;
+    }
+    .hero, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 18px 40px rgba(25, 42, 36, 0.08);
+    }
+    .hero {
+      padding: 24px;
+      display: grid;
+      gap: 8px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+    }
+    .hero p, .hint, .meta {
+      margin: 0;
+      color: var(--muted);
+    }
+    .panel {
+      padding: 20px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 18px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    .field.full {
+      grid-column: 1 / -1;
+    }
+    label, .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    input[type="text"], input[type="number"], textarea, select {
+      width: 100%;
+      border: 1px solid #c8d0c8;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: white;
+      font: inherit;
+      color: var(--ink);
+    }
+    textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+    .radio-row, .check-row, .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 14px;
+      align-items: center;
+    }
+    .radio-pill, .check-pill {
+      border: 1px solid var(--line);
+      background: #f8faf7;
+      border-radius: 999px;
+      padding: 8px 12px;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+    button:hover { transform: translateY(-1px); }
+    button.primary {
+      background: var(--accent);
+      color: white;
+    }
+    button.secondary {
+      background: var(--accent-2);
+      color: var(--accent);
+    }
+    button.ghost {
+      background: #eef1eb;
+      color: var(--ink);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+      transform: none;
+    }
+    .status-strip {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #f6f9f6;
+      border: 1px solid var(--line);
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--muted);
+    }
+    .dot.running { background: #d08d11; }
+    .dot.finished { background: var(--accent); }
+    .dot.failed { background: var(--danger); }
+    pre {
+      margin: 0;
+      padding: 16px;
+      min-height: 320px;
+      max-height: 52vh;
+      overflow: auto;
+      background: #18211f;
+      color: #e8f4ef;
+      border-radius: 16px;
+      font: 12px/1.5 "SFMono-Regular", Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .hidden { display: none !important; }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      .shell { width: min(100% - 20px, 1100px); margin: 10px auto 24px; }
+      .panel, .hero { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <p class="meta">Local web GUI</p>
+      <h1>Playwright Screenshots</h1>
+      <p>Start screenshot runs from your browser, keep the existing CLI logic, and inspect progress live without Tkinter.</p>
+    </section>
+
+    <section class="panel">
+      <form id="run-form" class="grid">
+        <div class="field full">
+          <div class="section-title">Input mode</div>
+          <div class="radio-row">
+            <label class="radio-pill"><input type="radio" name="input_mode" value="single" checked> Single website</label>
+            <label class="radio-pill"><input type="radio" name="input_mode" value="file"> Website list file</label>
+          </div>
+        </div>
+
+        <div class="field full" id="single-field">
+          <label for="single_url">Website or sitemap</label>
+          <input id="single_url" name="single_url" type="text" placeholder="example.com or example.com/sitemap.xml">
+        </div>
+
+        <div class="field full hidden" id="file-field">
+          <label for="url_file">Website list file</label>
+          <div class="button-row">
+            <input id="url_file" name="url_file" type="text" placeholder="/Users/.../sites.txt">
+            <button class="ghost" type="button" id="choose-file-button">Choose file...</button>
+          </div>
+          <p class="hint">One website or sitemap entry per line. Comments starting with <code>#</code> are supported.</p>
+        </div>
+
+        <div class="field">
+          <label for="variant">Variant</label>
+          <select id="variant" name="variant">
+            <option value="basic">Basic</option>
+            <option value="extended">Extended</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="timeout_profile">Timeout profile</label>
+          <select id="timeout_profile" name="timeout_profile">
+            <option value="normal">Normal</option>
+            <option value="slow">Slow</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="include_filters">Include filters</label>
+          <input id="include_filters" name="include_filters" type="text" placeholder="/blog/,/news/">
+        </div>
+
+        <div class="field">
+          <label for="exclude_filters">Exclude filters</label>
+          <input id="exclude_filters" name="exclude_filters" type="text" placeholder="/tag/,/author/">
+        </div>
+
+        <div class="field">
+          <label for="max_urls">Max URLs</label>
+          <input id="max_urls" name="max_urls" type="number" min="1" step="1" placeholder="10">
+        </div>
+
+        <div class="field full">
+          <div class="section-title">Options</div>
+          <div class="check-row">
+            <label class="check-pill"><input type="checkbox" id="only_failed" name="only_failed"> Only failed</label>
+            <label class="check-pill"><input type="checkbox" id="generate_index" name="generate_index" checked> Generate HTML index</label>
+          </div>
+        </div>
+
+        <div class="field full">
+          <div class="button-row">
+            <button class="primary" type="submit" id="start-button">Start screenshots</button>
+            <button class="secondary" type="button" id="open-output-button" disabled>Open last output</button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="status-strip">
+        <div class="status-pill"><span class="dot" id="status-dot"></span><span id="status-text">Ready</span></div>
+        <div class="meta" id="status-meta">No run started yet.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="button-row" style="margin-bottom: 10px;">
+        <div class="section-title">Live log</div>
+      </div>
+      <pre id="log-output">Ready.\n</pre>
+    </section>
+  </div>
+
+  <script>
+    const form = document.getElementById('run-form');
+    const startButton = document.getElementById('start-button');
+    const openOutputButton = document.getElementById('open-output-button');
+    const logOutput = document.getElementById('log-output');
+    const statusText = document.getElementById('status-text');
+    const statusMeta = document.getElementById('status-meta');
+    const statusDot = document.getElementById('status-dot');
+    const singleField = document.getElementById('single-field');
+    const fileField = document.getElementById('file-field');
+    const chooseFileButton = document.getElementById('choose-file-button');
+
+    function currentInputMode() {
+      return form.querySelector('input[name="input_mode"]:checked').value;
+    }
+
+    function updateInputMode() {
+      const singleMode = currentInputMode() === 'single';
+      singleField.classList.toggle('hidden', !singleMode);
+      fileField.classList.toggle('hidden', singleMode);
+    }
+
+    function collectPayload() {
+      return {
+        input_mode: currentInputMode(),
+        single_url: document.getElementById('single_url').value,
+        url_file: document.getElementById('url_file').value,
+        variant: document.getElementById('variant').value,
+        timeout_profile: document.getElementById('timeout_profile').value,
+        include_filters: document.getElementById('include_filters').value,
+        exclude_filters: document.getElementById('exclude_filters').value,
+        max_urls: document.getElementById('max_urls').value,
+        only_failed: document.getElementById('only_failed').checked,
+        generate_index: document.getElementById('generate_index').checked,
+      };
+    }
+
+    function updateState(state) {
+      logOutput.textContent = state.log_text || 'Ready.\\n';
+      logOutput.scrollTop = logOutput.scrollHeight;
+      statusText.textContent = state.status_text || 'Ready';
+      statusMeta.textContent = state.status_meta || 'No run started yet.';
+      startButton.disabled = !!state.running;
+      openOutputButton.disabled = !state.can_open_output;
+      statusDot.className = 'dot ' + (state.running ? 'running' : (state.last_return_code === 0 ? 'finished' : (state.last_return_code === null ? '' : 'failed')));
+    }
+
+    async function pollState() {
+      try {
+        const response = await fetch('/api/state');
+        const state = await response.json();
+        updateState(state);
+      } catch (error) {
+        statusText.textContent = 'Disconnected';
+        statusMeta.textContent = String(error);
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      startButton.disabled = true;
+      try {
+        const response = await fetch('/api/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(collectPayload()),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          alert(payload.error || 'Could not start the run.');
+        }
+      } finally {
+        setTimeout(pollState, 150);
+      }
+    });
+
+    openOutputButton.addEventListener('click', async () => {
+      const response = await fetch('/api/open-output', {method: 'POST'});
+      const payload = await response.json();
+      if (!response.ok) {
+        alert(payload.error || 'Could not open output.');
+      }
+    });
+
+    chooseFileButton.addEventListener('click', async () => {
+      const response = await fetch('/api/choose-file', {method: 'POST'});
+      const payload = await response.json();
+      if (!response.ok) {
+        alert(payload.error || 'Could not choose a file.');
+        return;
+      }
+      if (payload.path) {
+        document.getElementById('url_file').value = payload.path;
+      }
+    });
+
+    form.querySelectorAll('input[name="input_mode"]').forEach((input) => {
+      input.addEventListener('change', updateInputMode);
+    });
+
+    updateInputMode();
+    pollState();
+    setInterval(pollState, 1000);
+  </script>
+</body>
+</html>
+"""
 
 
 def domain_slug(root_url: str) -> str:
@@ -53,312 +424,303 @@ def normalize_input_url(raw_input: str) -> str:
     return 'https://' + value
 
 
-class ScreenshotGUI:
-    """Tkinter app that launches screenshot.py and streams the output."""
+class AppState:
+    """Shared state for the local web GUI."""
 
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title('Playwright Screenshots')
-        self.root.minsize(900, 760)
-
-        self.script_dir = Path(__file__).resolve().parent
-        self.python_path = self.script_dir / '.venv' / 'bin' / 'python'
-        self.script_path = self.script_dir / 'screenshot.py'
-        self.output_root = self.script_dir / 'screenshots'
-
+    def __init__(self, script_dir: Path) -> None:
+        self.script_dir = script_dir
+        self.python_path = script_dir / '.venv' / 'bin' / 'python'
+        self.script_path = script_dir / 'screenshot.py'
+        self.output_root = script_dir / 'screenshots'
+        self.lock = threading.Lock()
         self.process: Optional[subprocess.Popen[str]] = None
-        self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
-        self.worker_thread: Optional[threading.Thread] = None
+        self.log_text = 'Ready.\n'
+        self.status_text = 'Ready'
+        self.status_meta = 'No run started yet.'
         self.last_output_target: Optional[Path] = None
+        self.last_return_code: Optional[int] = None
 
-        self.input_mode = tk.StringVar(value='single')
-        self.single_url = tk.StringVar()
-        self.url_file = tk.StringVar()
-        self.variant = tk.StringVar(value='basic')
-        self.timeout_profile = tk.StringVar(value='normal')
-        self.only_failed = tk.BooleanVar(value=False)
-        self.generate_index = tk.BooleanVar(value=True)
-        self.include_filters = tk.StringVar()
-        self.exclude_filters = tk.StringVar()
-        self.max_urls = tk.StringVar()
-        self.status_text = tk.StringVar(value='Ready')
+    def snapshot(self) -> Dict[str, Any]:
+        with self.lock:
+            can_open_output = bool(self.last_output_target and self.last_output_target.exists())
+            return {
+                'running': self.process is not None,
+                'log_text': self.log_text,
+                'status_text': self.status_text,
+                'status_meta': self.status_meta,
+                'can_open_output': can_open_output,
+                'last_output_target': str(self.last_output_target) if self.last_output_target else '',
+                'last_return_code': self.last_return_code,
+            }
 
-        self._build_ui()
-        self._update_input_mode()
-        self.root.after(100, self._drain_log_queue)
-        self.root.protocol('WM_DELETE_WINDOW', self._handle_close)
+    def append_log(self, text: str) -> None:
+        with self.lock:
+            self.log_text += text
+            if len(self.log_text) > 200000:
+                self.log_text = self.log_text[-200000:]
 
-    def _build_ui(self) -> None:
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+    def set_running(self, process: subprocess.Popen[str], command: list[str]) -> None:
+        with self.lock:
+            self.process = process
+            self.last_return_code = None
+            self.last_output_target = None
+            self.status_text = 'Running'
+            self.status_meta = ' '.join(command)
+            self.log_text += '\n' + '=' * 72 + '\n'
+            self.log_text += 'Starting command:\n' + ' '.join(command) + '\n\n'
 
-        form = ttk.Frame(self.root, padding=16)
-        form.grid(row=0, column=0, sticky='nsew')
-        form.columnconfigure(1, weight=1)
+    def finish(self, return_code: int, output_target: Optional[Path]) -> None:
+        with self.lock:
+            self.process = None
+            self.last_return_code = return_code
+            self.last_output_target = output_target
+            if return_code == 0:
+                self.status_text = 'Finished'
+                self.status_meta = 'Run finished successfully.'
+                self.log_text += '\nRun finished successfully.\n'
+            else:
+                self.status_text = 'Failed'
+                self.status_meta = f'Run finished with exit code {return_code}.'
+                self.log_text += f'\nRun finished with exit code {return_code}.\n'
 
-        ttk.Label(form, text='Input mode').grid(row=0, column=0, sticky='w')
-        mode_frame = ttk.Frame(form)
-        mode_frame.grid(row=0, column=1, sticky='w')
-        ttk.Radiobutton(mode_frame, text='Single website', value='single', variable=self.input_mode,
-                        command=self._update_input_mode).grid(row=0, column=0, padx=(0, 12))
-        ttk.Radiobutton(mode_frame, text='Website list file', value='file', variable=self.input_mode,
-                        command=self._update_input_mode).grid(row=0, column=1)
 
-        ttk.Label(form, text='Website or sitemap').grid(row=1, column=0, sticky='w', pady=(10, 0))
-        self.single_url_entry = ttk.Entry(form, textvariable=self.single_url)
-        self.single_url_entry.grid(row=1, column=1, sticky='ew', pady=(10, 0))
+def validate_payload(state: AppState, payload: Dict[str, Any]) -> Optional[str]:
+    """Return a human-readable error when the request is not valid."""
+    if not state.python_path.exists():
+        return f'Missing virtual environment Python: {state.python_path}'
+    if not state.script_path.exists():
+        return f'Missing screenshot.py: {state.script_path}'
 
-        ttk.Label(form, text='List file').grid(row=2, column=0, sticky='w', pady=(10, 0))
-        file_frame = ttk.Frame(form)
-        file_frame.grid(row=2, column=1, sticky='ew', pady=(10, 0))
-        file_frame.columnconfigure(0, weight=1)
-        self.url_file_entry = ttk.Entry(file_frame, textvariable=self.url_file)
-        self.url_file_entry.grid(row=0, column=0, sticky='ew')
-        ttk.Button(file_frame, text='Browse...', command=self._browse_url_file).grid(row=0, column=1, padx=(8, 0))
+    input_mode = payload.get('input_mode', 'single')
+    if input_mode == 'single':
+        if not str(payload.get('single_url', '')).strip():
+            return 'Enter a website or sitemap first.'
+    elif input_mode == 'file':
+        file_path = Path(str(payload.get('url_file', '')).strip())
+        if not str(file_path):
+            return 'Choose a website list file first.'
+        if not file_path.exists():
+            return f'List file not found: {file_path}'
+    else:
+        return 'Unknown input mode.'
 
-        ttk.Label(form, text='Variant').grid(row=3, column=0, sticky='w', pady=(10, 0))
-        variant_frame = ttk.Frame(form)
-        variant_frame.grid(row=3, column=1, sticky='w', pady=(10, 0))
-        ttk.Radiobutton(variant_frame, text='Basic', value='basic', variable=self.variant).grid(row=0, column=0, padx=(0, 12))
-        ttk.Radiobutton(variant_frame, text='Extended', value='extended', variable=self.variant).grid(row=0, column=1)
+    max_urls = str(payload.get('max_urls', '')).strip()
+    if max_urls and (not max_urls.isdigit() or max_urls == '0'):
+        return 'Max URLs must be a positive whole number.'
 
-        ttk.Label(form, text='Timeout profile').grid(row=4, column=0, sticky='w', pady=(10, 0))
-        timeout_frame = ttk.Frame(form)
-        timeout_frame.grid(row=4, column=1, sticky='w', pady=(10, 0))
-        ttk.Radiobutton(timeout_frame, text='Normal', value='normal', variable=self.timeout_profile).grid(row=0, column=0, padx=(0, 12))
-        ttk.Radiobutton(timeout_frame, text='Slow', value='slow', variable=self.timeout_profile).grid(row=0, column=1)
+    return None
 
-        ttk.Label(form, text='Include filters').grid(row=5, column=0, sticky='w', pady=(10, 0))
-        ttk.Entry(form, textvariable=self.include_filters).grid(row=5, column=1, sticky='ew', pady=(10, 0))
 
-        ttk.Label(form, text='Exclude filters').grid(row=6, column=0, sticky='w', pady=(10, 0))
-        ttk.Entry(form, textvariable=self.exclude_filters).grid(row=6, column=1, sticky='ew', pady=(10, 0))
+def build_command(state: AppState, payload: Dict[str, Any]) -> list[str]:
+    """Build the screenshot.py command from GUI payload."""
+    command = [
+        str(state.python_path),
+        str(state.script_path),
+        '--variant', str(payload.get('variant', 'basic') or 'basic'),
+        '--timeout-profile', str(payload.get('timeout_profile', 'normal') or 'normal'),
+        '--no-open',
+    ]
 
-        ttk.Label(form, text='Max URLs').grid(row=7, column=0, sticky='w', pady=(10, 0))
-        ttk.Entry(form, textvariable=self.max_urls).grid(row=7, column=1, sticky='ew', pady=(10, 0))
+    if payload.get('generate_index', True):
+        command.append('--generate-index')
+    if payload.get('only_failed'):
+        command.append('--only-failed')
 
-        options_frame = ttk.Frame(form)
-        options_frame.grid(row=8, column=0, columnspan=2, sticky='w', pady=(12, 0))
-        ttk.Checkbutton(options_frame, text='Only failed', variable=self.only_failed).grid(row=0, column=0, padx=(0, 16))
-        ttk.Checkbutton(options_frame, text='Generate HTML index', variable=self.generate_index).grid(row=0, column=1)
+    include_filters = str(payload.get('include_filters', '')).strip()
+    exclude_filters = str(payload.get('exclude_filters', '')).strip()
+    max_urls = str(payload.get('max_urls', '')).strip()
 
-        button_frame = ttk.Frame(form)
-        button_frame.grid(row=9, column=0, columnspan=2, sticky='w', pady=(14, 0))
-        self.start_button = ttk.Button(button_frame, text='Start screenshots', command=self._start_run)
-        self.start_button.grid(row=0, column=0)
-        self.open_button = ttk.Button(button_frame, text='Open last output', command=self._open_last_output, state='disabled')
-        self.open_button.grid(row=0, column=1, padx=(8, 0))
-        ttk.Label(button_frame, textvariable=self.status_text).grid(row=0, column=2, padx=(16, 0))
+    if include_filters:
+        command.extend(['--include', include_filters])
+    if exclude_filters:
+        command.extend(['--exclude', exclude_filters])
+    if max_urls:
+        command.extend(['--max-urls', max_urls])
 
-        log_frame = ttk.Frame(self.root, padding=(16, 0, 16, 16))
-        log_frame.grid(row=1, column=0, sticky='nsew')
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(1, weight=1)
+    if payload.get('input_mode') == 'file':
+        command.extend(['--url-file', str(payload.get('url_file', '')).strip()])
+    else:
+        command.extend(['--url', str(payload.get('single_url', '')).strip()])
 
-        ttk.Label(log_frame, text='Live log').grid(row=0, column=0, sticky='w', pady=(0, 8))
-        self.log_widget = ScrolledText(log_frame, wrap='word', font=('Menlo', 11))
-        self.log_widget.grid(row=1, column=0, sticky='nsew')
-        self.log_widget.configure(state='disabled')
+    return command
 
-    def _browse_url_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title='Choose website list file',
-            filetypes=[('Text files', '*.txt'), ('All files', '*.*')],
-            initialdir=self.script_dir,
+
+def predict_output_target(state: AppState, payload: Dict[str, Any]) -> Optional[Path]:
+    """Predict the most useful output path after a finished run."""
+    if payload.get('input_mode') == 'file':
+        return state.output_root if state.output_root.exists() else None
+
+    normalized = normalize_input_url(str(payload.get('single_url', '')))
+    if not normalized:
+        return None
+    date_str = datetime.date.today().strftime('%Y-%m-%d')
+    run_dir = state.output_root / domain_slug(normalized) / date_str
+    if payload.get('generate_index', True):
+        index_path = run_dir / 'index.html'
+        return index_path if index_path.exists() else run_dir
+    return run_dir
+
+
+def choose_file(script_dir: Path) -> tuple[bool, str]:
+    """Open a native macOS file chooser and return the selected path."""
+    script = '''
+set chosenFile to choose file with prompt "Choose website list file"
+POSIX path of chosenFile
+'''
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=script_dir,
         )
-        if file_path:
-            self.url_file.set(file_path)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or '').strip()
+        if 'User canceled' in stderr:
+            return True, ''
+        return False, stderr or 'Could not choose a file.'
+    return True, result.stdout.strip()
 
-    def _update_input_mode(self) -> None:
-        single_mode = self.input_mode.get() == 'single'
-        self.single_url_entry.configure(state='normal' if single_mode else 'disabled')
-        self.url_file_entry.configure(state='disabled' if single_mode else 'normal')
 
-    def _append_log(self, text: str) -> None:
-        self.log_widget.configure(state='normal')
-        self.log_widget.insert('end', text)
-        self.log_widget.see('end')
-        self.log_widget.configure(state='disabled')
+def open_path(target_path: Path) -> tuple[bool, str]:
+    """Open a file or folder on macOS."""
+    try:
+        subprocess.run(['open', str(target_path)], check=True)
+    except subprocess.CalledProcessError as exc:
+        return False, str(exc)
+    return True, ''
 
-    def _drain_log_queue(self) -> None:
-        try:
-            while True:
-                message_type, payload = self.log_queue.get_nowait()
-                if message_type == 'log':
-                    self._append_log(payload)
-                elif message_type == 'done':
-                    self._finish_run(payload)
-        except queue.Empty:
-            pass
-        finally:
-            self.root.after(100, self._drain_log_queue)
 
-    def _validate_form(self) -> bool:
-        if not self.python_path.exists():
-            messagebox.showerror('Missing Python', f'Missing virtual environment Python:\n{self.python_path}')
-            return False
-        if not self.script_path.exists():
-            messagebox.showerror('Missing script', f'Missing screenshot.py:\n{self.script_path}')
-            return False
+def start_run(state: AppState, payload: Dict[str, Any]) -> tuple[bool, str]:
+    """Start a background screenshot run."""
+    validation_error = validate_payload(state, payload)
+    if validation_error:
+        return False, validation_error
 
-        if self.input_mode.get() == 'single':
-            if not self.single_url.get().strip():
-                messagebox.showerror('Missing website', 'Enter a website or sitemap first.')
-                return False
-        else:
-            raw_file_path = self.url_file.get().strip()
-            if not raw_file_path:
-                messagebox.showerror('Missing list file', 'Choose a website list file first.')
-                return False
-            file_path = Path(raw_file_path)
-            if not file_path.exists():
-                messagebox.showerror('List file not found', f'Could not find:\n{file_path}')
-                return False
+    with state.lock:
+        if state.process is not None:
+            return False, 'A screenshot run is already active.'
 
-        max_urls = self.max_urls.get().strip()
-        if max_urls:
-            if not max_urls.isdigit() or max_urls == '0':
-                messagebox.showerror('Invalid max URLs', 'Max URLs must be a positive whole number.')
-                return False
+    command = build_command(state, payload)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=state.script_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        return False, f'Could not start the screenshot run: {exc}'
 
-        return True
+    state.set_running(process, command)
 
-    def _build_command(self) -> list[str]:
-        command = [
-            str(self.python_path),
-            str(self.script_path),
-            '--variant', self.variant.get(),
-            '--timeout-profile', self.timeout_profile.get(),
-            '--no-open',
-        ]
+    def worker() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            state.append_log(line)
+        return_code = process.wait()
+        output_target = predict_output_target(state, payload)
+        state.finish(return_code, output_target if output_target and output_target.exists() else None)
 
-        if self.generate_index.get():
-            command.append('--generate-index')
-        if self.only_failed.get():
-            command.append('--only-failed')
+    threading.Thread(target=worker, daemon=True).start()
+    return True, ''
 
-        include_filters = self.include_filters.get().strip()
-        exclude_filters = self.exclude_filters.get().strip()
-        max_urls = self.max_urls.get().strip()
 
-        if include_filters:
-            command.extend(['--include', include_filters])
-        if exclude_filters:
-            command.extend(['--exclude', exclude_filters])
-        if max_urls:
-            command.extend(['--max-urls', max_urls])
+class AppHandler(BaseHTTPRequestHandler):
+    """HTTP handler for the local screenshot web GUI."""
 
-        if self.input_mode.get() == 'single':
-            command.extend(['--url', self.single_url.get().strip()])
-        else:
-            command.extend(['--url-file', self.url_file.get().strip()])
+    app_state: AppState
 
-        return command
+    def log_message(self, format: str, *args: Any) -> None:
+        return
 
-    def _predict_output_target(self) -> Optional[Path]:
-        if self.input_mode.get() != 'single':
-            return self.output_root if self.output_root.exists() else None
+    def _send_html(self, html: str) -> None:
+        data = html.encode('utf-8')
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
-        normalized = normalize_input_url(self.single_url.get())
-        if not normalized:
-            return None
-        date_str = datetime.date.today().strftime('%Y-%m-%d')
-        run_dir = self.output_root / domain_slug(normalized) / date_str
-        if self.generate_index.get():
-            index_path = run_dir / 'index.html'
-            return index_path if index_path.exists() else run_dir
-        return run_dir
+    def _send_json(self, payload: Dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        data = json.dumps(payload).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
-    def _set_running_state(self, is_running: bool) -> None:
-        self.start_button.configure(state='disabled' if is_running else 'normal')
-        if is_running:
-            self.open_button.configure(state='disabled')
+    def _read_json(self) -> Dict[str, Any]:
+        content_length = int(self.headers.get('Content-Length', '0') or 0)
+        if content_length <= 0:
+            return {}
+        body = self.rfile.read(content_length)
+        return json.loads(body.decode('utf-8'))
 
-    def _start_run(self) -> None:
-        if self.process is not None:
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == '/':
+            self._send_html(HTML_PAGE)
             return
-        if not self._validate_form():
+        if self.path == '/api/state':
+            self._send_json(self.app_state.snapshot())
             return
+        self._send_json({'error': 'Not found.'}, status=HTTPStatus.NOT_FOUND)
 
-        command = self._build_command()
-        self.last_output_target = None
-        self.status_text.set('Running...')
-        self._append_log('\n' + '=' * 72 + '\n')
-        self._append_log('Starting command:\n')
-        self._append_log(' '.join(command) + '\n\n')
-        self._set_running_state(True)
-
-        def worker() -> None:
-            try:
-                self.process = subprocess.Popen(
-                    command,
-                    cwd=self.script_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                assert self.process.stdout is not None
-                for line in self.process.stdout:
-                    self.log_queue.put(('log', line))
-                return_code = self.process.wait()
-                self.log_queue.put(('done', str(return_code)))
-            except Exception as exc:
-                self.log_queue.put(('log', f'\nFailed to start process: {exc}\n'))
-                self.log_queue.put(('done', '1'))
-
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
-        self.worker_thread.start()
-
-    def _finish_run(self, return_code_text: str) -> None:
-        return_code = int(return_code_text)
-        self.process = None
-        self.worker_thread = None
-        self.last_output_target = self._predict_output_target()
-        if self.last_output_target and self.last_output_target.exists():
-            self.open_button.configure(state='normal')
-
-        self._set_running_state(False)
-        if return_code == 0:
-            self.status_text.set('Finished')
-            self._append_log('\nRun finished successfully.\n')
-        else:
-            self.status_text.set('Failed')
-            self._append_log(f'\nRun finished with exit code {return_code}.\n')
-
-    def _open_last_output(self) -> None:
-        if not self.last_output_target or not self.last_output_target.exists():
-            messagebox.showinfo('No output yet', 'No output folder or index file is available yet.')
-            return
-        try:
-            subprocess.run(['open', str(self.last_output_target)], check=False)
-        except Exception as exc:
-            messagebox.showerror('Could not open output', str(exc))
-
-    def _handle_close(self) -> None:
-        if self.process is not None:
-            should_close = messagebox.askyesno(
-                'Quit GUI',
-                'A screenshot run is still active. Quit the GUI anyway?',
-            )
-            if not should_close:
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == '/api/start':
+            payload = self._read_json()
+            ok, error = start_run(self.app_state, payload)
+            if not ok:
+                self._send_json({'error': error}, status=HTTPStatus.BAD_REQUEST)
                 return
-            try:
-                self.process.terminate()
-            except Exception:
-                pass
-        self.root.destroy()
+            self._send_json({'ok': True})
+            return
+
+        if self.path == '/api/open-output':
+            snapshot = self.app_state.snapshot()
+            target = snapshot.get('last_output_target')
+            if not target:
+                self._send_json({'error': 'No output is available yet.'}, status=HTTPStatus.BAD_REQUEST)
+                return
+            ok, error = open_path(Path(str(target)))
+            if not ok:
+                self._send_json({'error': error}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json({'ok': True})
+            return
+
+        if self.path == '/api/choose-file':
+            ok, result = choose_file(self.app_state.script_dir)
+            if not ok:
+                self._send_json({'error': result}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json({'path': result})
+            return
+
+        self._send_json({'error': 'Not found.'}, status=HTTPStatus.NOT_FOUND)
 
 
 def main() -> None:
-    root = tk.Tk()
-    style = ttk.Style()
+    script_dir = Path(__file__).resolve().parent
+    state = AppState(script_dir)
+    handler_class = type('PlaywrightGUIHandler', (AppHandler,), {'app_state': state})
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler_class)
+    url = f'http://127.0.0.1:{server.server_port}/'
+    print(f'Opening local GUI at {url}')
     try:
-        style.theme_use('clam')
-    except tk.TclError:
+        webbrowser.open(url)
+    except Exception:
         pass
-    ScreenshotGUI(root)
-    root.mainloop()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == '__main__':
