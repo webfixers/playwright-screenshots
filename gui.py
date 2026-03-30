@@ -607,6 +607,7 @@ def start_run(state: AppState, payload: Dict[str, Any]) -> tuple[bool, str]:
         process = subprocess.Popen(
             command,
             cwd=state.script_dir,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
