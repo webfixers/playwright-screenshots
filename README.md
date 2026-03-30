@@ -46,18 +46,18 @@ Once the prompt shows `(.venv)`, you are ready to run the script.
 
 ## Usage
 
-The entry point is `screenshot.py`. You provide a website root URL or sitemap URL and choose either the `basic` or `extended` screenshot set.
+The entry point is `screenshot.py`. You can provide a full URL, a bare domain like `example.com`, or a sitemap path like `example.com/sitemap.xml`, and then choose either the `basic` or `extended` screenshot set.
 
 ### Basic example
 
 ```bash
-python screenshot.py --url https://example.com/sitemap.xml --variant basic
+python screenshot.py --url example.com --variant basic
 ```
 
 ### Extended example
 
 ```bash
-python screenshot.py --url https://example.com/sitemap.xml --variant extended
+python screenshot.py --url www.example.com --variant extended
 ```
 
 ### Generate a browseable HTML index too
@@ -65,6 +65,8 @@ python screenshot.py --url https://example.com/sitemap.xml --variant extended
 ```bash
 python screenshot.py --url https://example.com/sitemap.xml --variant basic --generate-index
 ```
+
+If you omit `https://`, the script now adds it automatically. When needed, it also tries common variants such as `www.` and both `sitemap.xml` and `sitemap_index.xml`.
 
 On macOS in an interactive Terminal session, the script will automatically open the generated `index.html` after a successful run. Without `--generate-index`, it opens the dated run folder instead.
 
@@ -141,7 +143,7 @@ screenshots/
 
 ## Command reference
 
-- `--url`: root URL or sitemap URL
+- `--url`: root URL, bare domain, or sitemap URL
 - `--variant basic`: practical reduced screenshot set
 - `--variant extended`: more detailed breakpoint coverage
 - `--include`: only process URLs containing one or more path fragments

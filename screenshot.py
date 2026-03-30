@@ -46,7 +46,7 @@ import sys
 from collections import Counter
 from html import escape
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, Response
@@ -107,6 +107,82 @@ def build_output_paths(base_output_dir: str, root_url: str, date_str: str) -> Di
         'report_csv': os.path.join(domain_dir, 'report.csv'),
         'index_html': os.path.join(run_dir, 'index.html'),
     }
+
+
+def normalize_input_url(raw_input: str) -> str:
+    """Normalize user input into an absolute URL-like string."""
+    value = raw_input.strip()
+    if not value:
+        return value
+    if value.startswith('//'):
+        value = 'https:' + value
+    if not re.match(r'^[A-Za-z][A-Za-z0-9+.\-]*://', value):
+        value = 'https://' + value.lstrip('/')
+
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or 'https').lower()
+    netloc = parsed.netloc.lower()
+    path = parsed.path or ''
+
+    if not path or path == '/':
+        return f"{scheme}://{netloc}"
+
+    return urlunparse((scheme, netloc, path, '', parsed.query, ''))
+
+
+def build_url_variants(normalized_url: str) -> List[str]:
+    """Build a small set of likely working URL variants from user input."""
+    parsed = urlparse(normalized_url)
+    hostname = parsed.hostname or ''
+    if not hostname:
+        return [normalized_url]
+
+    schemes = [parsed.scheme]
+    if parsed.scheme == 'https':
+        schemes.append('http')
+    elif parsed.scheme == 'http':
+        schemes.append('https')
+
+    hostnames = [hostname]
+    if hostname.startswith('www.'):
+        hostnames.append(hostname[4:])
+    else:
+        hostnames.append('www.' + hostname)
+
+    variants: List[str] = []
+    for scheme in schemes:
+        for candidate_hostname in hostnames:
+            host = candidate_hostname
+            if parsed.port:
+                host = f"{candidate_hostname}:{parsed.port}"
+            candidate = urlunparse((scheme, host, parsed.path or '', '', parsed.query, ''))
+            if not parsed.path or parsed.path == '/':
+                candidate = f"{scheme}://{host}"
+            if candidate not in variants:
+                variants.append(candidate)
+    return variants
+
+
+def build_sitemap_candidate_urls(user_input: str) -> List[str]:
+    """Build sitemap URLs to try from flexible user input."""
+    normalized_url = normalize_input_url(user_input)
+    variants = build_url_variants(normalized_url)
+    candidates: List[str] = []
+
+    for variant in variants:
+        parsed = urlparse(variant)
+        if parsed.path.lower().endswith('.xml'):
+            if variant not in candidates:
+                candidates.append(variant)
+            continue
+
+        root = variant.rstrip('/')
+        for suffix in ('/sitemap.xml', '/sitemap_index.xml'):
+            candidate = root + suffix
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    return candidates
 
 
 def is_relevant(url: str) -> bool:
@@ -179,32 +255,29 @@ async def fetch_xml(session: aiohttp.ClientSession, url: str) -> str:
             raise exc
 
 
-async def parse_sitemaps(root_url: str) -> Set[str]:
-    """Recursively fetch and parse the sitemap(s) for a website."""
-    seen_sitemaps: Set[str] = set()
-    urls: Set[str] = set()
+async def parse_sitemaps(root_url: str) -> Tuple[Set[str], Optional[str]]:
+    """Recursively fetch and parse sitemap candidates for a website."""
 
-    async def _parse(url: str, session: aiohttp.ClientSession) -> None:
+    async def _parse(url: str, session: aiohttp.ClientSession, seen_sitemaps: Set[str], urls: Set[str]) -> bool:
         if url in seen_sitemaps:
-            return
+            return True
         seen_sitemaps.add(url)
         try:
             xml_content = await fetch_xml(session, url)
         except Exception as e:
-            print(f"Failed to fetch sitemap {url}: {e}", file=sys.stderr)
-            return
+            return False
         try:
             import xml.etree.ElementTree as ET
             tree = ET.fromstring(xml_content)
         except Exception as e:
             print(f"Failed to parse sitemap XML {url}: {e}", file=sys.stderr)
-            return
+            return False
         tag = tree.tag.lower().split('}')[-1]
         if tag == 'sitemapindex':
             for sitemap in tree.findall('.//{*}sitemap'):
                 loc_elem = sitemap.find('{*}loc')
                 if loc_elem is not None and loc_elem.text:
-                    await _parse(loc_elem.text.strip(), session)
+                    await _parse(loc_elem.text.strip(), session, seen_sitemaps, urls)
         elif tag == 'urlset':
             for url_elem in tree.findall('{*}url'):
                 loc = url_elem.find('{*}loc')
@@ -212,12 +285,20 @@ async def parse_sitemaps(root_url: str) -> Set[str]:
                     page_url = loc.text.strip()
                     if is_relevant(page_url):
                         urls.add(page_url)
+        return True
 
+    candidate_sitemaps = build_sitemap_candidate_urls(root_url)
     async with aiohttp.ClientSession() as session:
-        parsed = urlparse(root_url)
-        sitemap_url = root_url if parsed.path and parsed.path.endswith('.xml') else root_url.rstrip('/') + '/sitemap.xml'
-        await _parse(sitemap_url, session)
-    return urls
+        for sitemap_url in candidate_sitemaps:
+            seen_sitemaps: Set[str] = set()
+            urls: Set[str] = set()
+            success = await _parse(sitemap_url, session, seen_sitemaps, urls)
+            if success:
+                return urls, sitemap_url
+
+    tried = ', '.join(candidate_sitemaps)
+    print(f"Failed to fetch a sitemap from: {tried}", file=sys.stderr)
+    return set(), None
 
 
 async def hide_overlays_and_disable_animations(page: Page) -> None:
@@ -522,7 +603,7 @@ def open_output_target(run_dir: str, index_path: str, should_open_index: bool, n
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Website screenshotter using Playwright.')
-    parser.add_argument('--url', required=True, help='Root URL of the website (e.g. https://example.com) or a sitemap.xml URL.')
+    parser.add_argument('--url', required=True, help='Root URL, bare domain, or sitemap URL (e.g. example.com or https://example.com/sitemap.xml).')
     parser.add_argument('--variant', choices=['basic', 'extended'], default='basic',
                         help='Screenshot set to use (default: basic).')
     parser.add_argument('--output', default='screenshots', help='Base output directory for screenshots and reports.')
@@ -550,6 +631,7 @@ async def main() -> None:
     if args.max_urls is not None and args.max_urls < 1:
         parser.error('--max-urls must be 1 or higher.')
 
+    normalized_input_url = normalize_input_url(args.url)
     include_terms = parse_filter_terms(args.include)
     exclude_terms = parse_filter_terms(args.exclude)
 
@@ -571,15 +653,17 @@ async def main() -> None:
     viewports = basic_viewports if args.variant == 'basic' else extended_viewports
     date_str = datetime.date.today().strftime('%Y-%m-%d')
 
-    paths = build_output_paths(args.output, args.url, date_str)
+    paths = build_output_paths(args.output, normalized_input_url, date_str)
     os.makedirs(paths['domain_dir'], exist_ok=True)
     os.makedirs(paths['run_dir'], exist_ok=True)
 
     print(f"Output folder for this domain: {paths['domain_dir']}")
     print(f"Run folder for today: {paths['run_dir']}")
+    if normalized_input_url != args.url.strip():
+        print(f"Normalized input: {normalized_input_url}")
 
     urls: List[str] = []
-    sitemap_source = args.url
+    sitemap_source = normalized_input_url
     if args.only_failed:
         report_path = paths['report_json']
         if not os.path.exists(report_path):
@@ -592,7 +676,10 @@ async def main() -> None:
         print(f'Rerunning {len(urls)} previously failed URLs for this domain...')
     else:
         print('Fetching sitemap(s)...')
-        sitemap_urls = await parse_sitemaps(args.url)
+        sitemap_urls, resolved_sitemap_source = await parse_sitemaps(normalized_input_url)
+        if resolved_sitemap_source:
+            sitemap_source = resolved_sitemap_source
+            print(f'Using sitemap source: {resolved_sitemap_source}')
         print(f'Found {len(sitemap_urls)} URLs in sitemap(s).')
         urls = sorted(sitemap_urls)
 

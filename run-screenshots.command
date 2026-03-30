@@ -22,7 +22,7 @@ source .venv/bin/activate || exit 1
 echo "Screenshot runner"
 echo
 
-read "SITEMAP_URL?Enter sitemap URL: "
+read "SITEMAP_URL?Enter website or sitemap (for example example.com or example.com/sitemap.xml): "
 
 if [[ -z "$SITEMAP_URL" ]]; then
   echo
