@@ -244,24 +244,81 @@ async def hide_overlays_and_disable_animations(page: Page) -> None:
     await page.add_style_tag(content=disable_css + overlay_css)
 
 
+async def wait_for_stable_page_height(
+    page: Page,
+    checks_needed: int = 3,
+    interval_ms: int = 400,
+    max_checks: int = 10,
+) -> None:
+    """Wait until the page height stops growing for a few consecutive checks."""
+    stable_checks = 0
+    last_height = -1
+
+    for _ in range(max_checks):
+        current_height = await page.evaluate("""
+            () => {
+                const root = document.scrollingElement || document.documentElement || document.body;
+                return Math.max(
+                    root ? root.scrollHeight : 0,
+                    document.documentElement ? document.documentElement.scrollHeight : 0,
+                    document.body ? document.body.scrollHeight : 0
+                );
+            }
+        """)
+        if current_height == last_height:
+            stable_checks += 1
+            if stable_checks >= checks_needed:
+                return
+        else:
+            stable_checks = 0
+            last_height = current_height
+        await page.wait_for_timeout(interval_ms)
+
+
 async def scroll_to_bottom(page: Page) -> None:
-    """Scroll down the page gradually to trigger lazy loaded content."""
+    """Scroll down the page gradually and settle long pages before capture."""
     await page.evaluate("""
         async () => {
-            return await new Promise((resolve) => {
-                let totalHeight = 0;
-                const distance = 500;
-                const timer = setInterval(() => {
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= document.body.scrollHeight) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 250);
-            });
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const getRoot = () => document.scrollingElement || document.documentElement || document.body;
+
+            let lastHeight = 0;
+            let stableBottomChecks = 0;
+
+            for (let step = 0; step < 60; step += 1) {
+                const root = getRoot();
+                const viewportHeight = window.innerHeight || 800;
+                const distance = Math.max(400, Math.floor(viewportHeight * 0.85));
+                window.scrollBy(0, distance);
+                await sleep(250);
+
+                const currentRoot = getRoot();
+                const currentHeight = Math.max(
+                    currentRoot ? currentRoot.scrollHeight : 0,
+                    document.documentElement ? document.documentElement.scrollHeight : 0,
+                    document.body ? document.body.scrollHeight : 0
+                );
+                const scrollTop = currentRoot ? currentRoot.scrollTop : window.scrollY;
+                const maxScrollTop = Math.max(0, currentHeight - viewportHeight);
+                const nearBottom = scrollTop >= maxScrollTop - 5;
+
+                if (nearBottom && currentHeight <= lastHeight) {
+                    stableBottomChecks += 1;
+                } else {
+                    stableBottomChecks = 0;
+                }
+
+                lastHeight = currentHeight;
+
+                if (stableBottomChecks >= 2) {
+                    break;
+                }
+            }
+
+            window.scrollTo(0, 0);
         }
     """)
+    await wait_for_stable_page_height(page)
 
 
 async def process_url(
@@ -313,7 +370,11 @@ async def process_url(
                 page_title = await page.title()
                 await hide_overlays_and_disable_animations(page)
                 await scroll_to_bottom(page)
-                await page.wait_for_timeout(1000)
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=5000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(750)
                 await page.screenshot(path=screenshot_path, full_page=True)
                 success = True
                 page_successes += 1

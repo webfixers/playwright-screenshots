@@ -118,6 +118,8 @@ The `.command` launcher now also supports a few safe extra options:
 - an optional max URL limit for smaller sample runs
 - disabling automatic opening after the run
 
+For long pages, the script now scrolls through the page, waits for the document height to settle, and returns to the top before taking the full-page screenshot. This improves capture stability on pages with lazy-loaded sections.
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
