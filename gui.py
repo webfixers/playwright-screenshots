@@ -515,6 +515,7 @@ def build_command(state: AppState, payload: Dict[str, Any]) -> list[str]:
     """Build the screenshot.py command from GUI payload."""
     command = [
         str(state.python_path),
+        '-u',
         str(state.script_path),
         '--variant', str(payload.get('variant', 'basic') or 'basic'),
         '--timeout-profile', str(payload.get('timeout_profile', 'normal') or 'normal'),
