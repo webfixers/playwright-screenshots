@@ -66,6 +66,8 @@ python screenshot.py --url https://example.com/sitemap.xml --variant extended
 python screenshot.py --url https://example.com/sitemap.xml --variant basic --generate-index
 ```
 
+On macOS in an interactive Terminal session, the script will automatically open the generated `index.html` after a successful run. Without `--generate-index`, it opens the dated run folder instead.
+
 ### Example with your current workflow
 
 ```bash
@@ -94,6 +96,8 @@ Viewport results -> success: 44, failed: 0
 
 Before screenshots start, the script also shows a short preview of the URLs it is about to process. In interactive Terminal sessions, runs of 100 URLs or more require confirmation before capture begins.
 
+After a successful run on macOS, the script also opens the output automatically unless you disable that behavior with `--no-open`.
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
@@ -119,6 +123,7 @@ screenshots/
 - `--variant basic`: practical reduced screenshot set
 - `--variant extended`: more detailed breakpoint coverage
 - `--generate-index`: creates an HTML gallery of screenshots
+- `--no-open`: do not open the output automatically after a successful run
 - `--output`: custom output directory
 - `--only-failed`: rerun only pages that failed previously
 - `--retries`: number of retries per page and viewport

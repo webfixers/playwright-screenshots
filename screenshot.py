@@ -41,6 +41,7 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from html import escape
@@ -388,6 +389,23 @@ def preview_urls(urls: List[str], only_failed: bool, large_run_threshold: int = 
     return True
 
 
+def open_output_target(run_dir: str, index_path: str, should_open_index: bool, no_open: bool) -> None:
+    """Open the HTML index or run folder on macOS after a successful run."""
+    if no_open:
+        return
+    if sys.platform != 'darwin':
+        return
+    if not sys.stdin.isatty():
+        return
+
+    target_path = index_path if should_open_index and os.path.exists(index_path) else run_dir
+    try:
+        subprocess.run(['open', target_path], check=False)
+        print(f"Opened output: {target_path}")
+    except Exception as exc:
+        print(f"Could not open output automatically: {exc}", file=sys.stderr)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Website screenshotter using Playwright.')
     parser.add_argument('--url', required=True, help='Root URL of the website (e.g. https://example.com) or a sitemap.xml URL.')
@@ -399,6 +417,8 @@ async def main() -> None:
                         help='Reprocess only pages marked as failed in the last report.json file for this domain.')
     parser.add_argument('--generate-index', action='store_true',
                         help='Generate an HTML index page to browse the screenshots.')
+    parser.add_argument('--no-open', action='store_true',
+                        help='Do not open the output folder or HTML index automatically after a successful run.')
     parser.add_argument('--concurrency', type=int, default=1,
                         help='Number of pages to process concurrently (default: 1). Concurrency >1 may increase memory usage.')
     args = parser.parse_args()
@@ -496,6 +516,8 @@ async def main() -> None:
 
     if args.generate_index:
         generate_html_index(report, paths['run_dir'], date_str)
+
+    open_output_target(paths['run_dir'], paths['index_html'], args.generate_index, args.no_open)
 
     status_counts = Counter(entry['status'] for entry in report)
     successful_pages = len({entry['url'] for entry in report if entry['status'] == 'success'})
