@@ -12,10 +12,13 @@ Keep the Python script and the virtual environment together in the same project 
 
 ```text
 playwright-screenshots/
+├── gui.py
 ├── screenshot.py
 ├── README.md
 ├── .gitignore
 ├── .venv/
+├── run-screenshots.command
+├── run-screenshots-gui.command
 └── screenshots/
     └── example.com/
 ```
@@ -49,6 +52,32 @@ Once the prompt shows `(.venv)`, you are ready to run the script.
 The entry point is `screenshot.py`. You can provide a full URL, a bare domain like `example.com`, or a sitemap path like `example.com/sitemap.xml`, and then choose either the `basic` or `extended` screenshot set.
 
 For batch runs, you can also provide a text file with one website or sitemap entry per line.
+
+If you prefer not to work in Terminal, you can now also use the local Tkinter GUI in `gui.py` or launch it via `run-screenshots-gui.command`.
+
+The GUI uses the macOS system Python at `/usr/bin/python3` for the window itself, and still uses the project `.venv` for the actual screenshot run. This avoids Tkinter problems in virtual environments that do not include `_tkinter`.
+
+## GUI usage
+
+Start the GUI with:
+
+```bash
+cd "/path/to/playwright-screenshots"
+/usr/bin/python3 gui.py
+```
+
+Or on macOS, just double-click `run-screenshots-gui.command`.
+
+The first GUI version includes:
+
+- single website or website list file mode
+- `basic` or `extended` variants
+- `normal` or `slow` timeout profile
+- `only failed`, include, exclude and max URL options
+- a live log window during the run
+- an `Open last output` button after the run finishes
+
+The GUI intentionally reuses `screenshot.py` underneath, so the CLI and GUI stay aligned.
 
 ### Basic example
 
