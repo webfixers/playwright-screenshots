@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1108,14 +1110,54 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description='Local web GUI for Playwright screenshots.')
+    parser.add_argument(
+        '--no-browser-open',
+        action='store_true',
+        help='Start the local GUI server without opening the browser automatically.',
+    )
+    args = parser.parse_args()
+
     script_dir = Path(__file__).resolve().parent
     state = AppState(script_dir)
     handler_class = type('PlaywrightGUIHandler', (AppHandler,), {'app_state': state})
     server = ThreadingHTTPServer(('127.0.0.1', 0), handler_class)
     url = f'http://127.0.0.1:{server.server_port}/'
-    print(f'Opening local GUI at {url}')
+    shutdown_started = threading.Event()
+
+    def shutdown_active_run() -> None:
+        with state.lock:
+            active_process = state.process
+        if active_process is None:
+            return
+
+        stop_run(state)
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            with state.lock:
+                if state.process is None:
+                    return
+            time.sleep(0.1)
+
+    def handle_shutdown_signal(signum: int, frame: object) -> None:
+        del signum, frame
+        if shutdown_started.is_set():
+            return
+        shutdown_started.set()
+
+        def worker() -> None:
+            shutdown_active_run()
+            server.shutdown()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+
+    print(f'Opening local GUI at {url}', flush=True)
     try:
-        webbrowser.open(url)
+        if not args.no_browser_open:
+            webbrowser.open(url)
     except Exception:
         pass
     try:

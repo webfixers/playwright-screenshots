@@ -13,10 +13,12 @@ Keep the Python script and the virtual environment together in the same project 
 ```text
 playwright-screenshots/
 ├── gui.py
+├── macos-app/
 ├── screenshot.py
 ├── README.md
 ├── .gitignore
 ├── .venv/
+├── build-macos-app.command
 ├── run-screenshots.command
 ├── run-screenshots-gui.command
 └── screenshots/
@@ -56,6 +58,8 @@ For batch runs, you can also provide a text file with one website or sitemap ent
 If you prefer not to work in Terminal, you can now also use the local web GUI in `gui.py` or launch it via `run-screenshots-gui.command`.
 The GUI is now a small local web interface started by `gui.py`. It runs locally on your Mac, opens in your browser, and still uses the project `.venv` for the actual screenshot run.
 
+You can also build a small macOS app wrapper that starts the same local web GUI without showing a Terminal window.
+
 ## GUI usage
 
 Start the GUI with:
@@ -85,6 +89,33 @@ The first GUI version includes:
 The GUI intentionally reuses `screenshot.py` underneath, so the CLI and GUI stay aligned.
 Closing the browser tab does not stop the run by itself, because the local GUI server still runs in Terminal. Use the `Stop run` button in the browser or `Ctrl+C` in the Terminal window that launched the GUI.
 The GUI stores a small local history in `.gui-history.json` inside the project folder.
+
+## macOS app wrapper
+
+If you want a proper `.app` that starts the local web GUI without showing Terminal, build the wrapper once with:
+
+```bash
+cd "/path/to/playwright-screenshots"
+./build-macos-app.command
+```
+
+That creates:
+
+```text
+build/Playwright Screenshots.app
+```
+
+Keep that `.app` inside the project folder so it can still find `.venv` and `gui.py` even if you move the whole project later.
+
+What this app does:
+
+- starts `gui.py` in the background using the project `.venv`
+- opens the browser to the local GUI automatically
+- lets you reopen the browser GUI if you close the tab
+- lets you stop the local GUI server from the native app window
+- keeps using the same existing `screenshot.py` and output structure
+
+This is intentionally a wrapper around the current Python/web GUI, not a full native rewrite yet.
 
 ### Basic example
 
@@ -170,6 +201,8 @@ Viewport results -> success: 44, failed: 0
 Before screenshots start, the script also shows a short preview of the URLs it is about to process. In interactive Terminal sessions, runs of 100 URLs or more require confirmation before capture begins.
 
 After a successful run on macOS, the script also opens the output automatically unless you disable that behavior with `--no-open`.
+
+When the GUI is started from the macOS app wrapper, the app itself opens the browser, so `gui.py` now supports a `--no-browser-open` flag for that wrapper flow.
 
 The `.command` launcher now also supports a few safe extra options:
 

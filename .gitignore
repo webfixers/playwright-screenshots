@@ -1,3 +1,5 @@
 .venv/
 screenshots/
 .DS_Store
+build/
+.gui-history.json
