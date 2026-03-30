@@ -21,6 +21,49 @@
 
 @implementation AppController
 
+- (NSColor *)bodyTextColor {
+    return [NSColor colorWithCalibratedRed:0.33 green:0.39 blue:0.37 alpha:1.0];
+}
+
+- (NSColor *)buttonBackgroundColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    if (!enabled) {
+        return [NSColor colorWithCalibratedRed:0.94 green:0.94 blue:0.92 alpha:1.0];
+    }
+    if ([role isEqualToString:@"primary"]) {
+        return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
+    }
+    if ([role isEqualToString:@"danger"]) {
+        return [NSColor colorWithCalibratedRed:0.95 green:0.89 blue:0.89 alpha:1.0];
+    }
+    return [NSColor colorWithCalibratedRed:0.90 green:0.95 blue:0.92 alpha:1.0];
+}
+
+- (NSColor *)buttonBorderColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    if (!enabled) {
+        return [NSColor colorWithCalibratedRed:0.82 green:0.84 blue:0.80 alpha:1.0];
+    }
+    if ([role isEqualToString:@"primary"]) {
+        return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
+    }
+    if ([role isEqualToString:@"danger"]) {
+        return [NSColor colorWithCalibratedRed:0.78 green:0.55 blue:0.55 alpha:1.0];
+    }
+    return [NSColor colorWithCalibratedRed:0.61 green:0.76 blue:0.69 alpha:1.0];
+}
+
+- (NSColor *)buttonTitleColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    if (!enabled) {
+        return [NSColor colorWithCalibratedRed:0.53 green:0.57 blue:0.55 alpha:1.0];
+    }
+    if ([role isEqualToString:@"primary"]) {
+        return [NSColor whiteColor];
+    }
+    if ([role isEqualToString:@"danger"]) {
+        return [NSColor colorWithCalibratedRed:0.46 green:0.16 blue:0.18 alpha:1.0];
+    }
+    return [NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     [self buildWindow];
@@ -66,13 +109,13 @@
                                               color:[NSColor colorWithCalibratedWhite:0.15 alpha:1.0]];
     NSTextField *subtitleLabel = [self labelWithString:@"Native macOS wrapper for the local web GUI. No Terminal window needed."
                                                   font:[NSFont systemFontOfSize:13]
-                                                 color:[NSColor secondaryLabelColor]];
+                                                 color:[self bodyTextColor]];
     self.statusLabel = [self labelWithString:@"Starting..."
                                         font:[NSFont boldSystemFontOfSize:15]
                                        color:[NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0]];
     self.detailLabel = [self labelWithString:@"Preparing the local GUI server."
                                         font:[NSFont systemFontOfSize:13]
-                                       color:[NSColor secondaryLabelColor]];
+                                       color:[self bodyTextColor]];
     self.urlLabel = [self labelWithString:@"Browser URL: waiting for local server..."
                                      font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]
                                     color:[NSColor colorWithCalibratedRed:0.24 green:0.31 blue:0.29 alpha:1.0]];
@@ -188,8 +231,25 @@
 
 - (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
-    button.bezelStyle = NSBezelStyleRounded;
+    button.bordered = NO;
+    button.wantsLayer = YES;
+    button.layer.cornerRadius = 9.0;
+    button.layer.borderWidth = 1.0;
+    button.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
     return button;
+}
+
+- (void)applyStyleToButton:(NSButton *)button role:(NSString *)role enabled:(BOOL)enabled {
+    button.enabled = enabled;
+    button.alphaValue = 1.0;
+    button.layer.backgroundColor = [self buttonBackgroundColorForRole:role enabled:enabled].CGColor;
+    button.layer.borderColor = [self buttonBorderColorForRole:role enabled:enabled].CGColor;
+
+    NSDictionary<NSAttributedStringKey, id> *attributes = @{
+        NSForegroundColorAttributeName: [self buttonTitleColorForRole:role enabled:enabled],
+        NSFontAttributeName: button.font ?: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+    };
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:button.title attributes:attributes];
 }
 
 - (NSURL *)projectRootURL {
@@ -437,10 +497,10 @@
 
 - (void)updateButtons {
     BOOL running = (self.serverTask != nil && self.serverTask.isRunning);
-    self.startButton.enabled = !running;
-    self.openButton.enabled = (self.serverURL != nil);
-    self.stopButton.enabled = running;
-    self.revealButton.enabled = YES;
+    [self applyStyleToButton:self.startButton role:@"primary" enabled:!running];
+    [self applyStyleToButton:self.openButton role:@"secondary" enabled:(self.serverURL != nil)];
+    [self applyStyleToButton:self.stopButton role:@"danger" enabled:running];
+    [self applyStyleToButton:self.revealButton role:@"secondary" enabled:YES];
 }
 
 - (void)appendLog:(NSString *)text {
