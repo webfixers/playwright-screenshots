@@ -74,13 +74,17 @@ The first GUI version includes:
 - `basic` or `extended` variants
 - `normal` or `slow` timeout profile
 - `only failed`, include, exclude and max URL options
+- a `Pause run` / `Resume run` control for long runs
 - a live log view in the browser during the run
+- live progress feedback for current page and viewport
+- a small recent-run history in the GUI
 - a `Stop run` button to stop the active screenshot process cleanly
 - an `Open last output` button after the run finishes
 - a native file chooser for website list files on macOS
 
 The GUI intentionally reuses `screenshot.py` underneath, so the CLI and GUI stay aligned.
 Closing the browser tab does not stop the run by itself, because the local GUI server still runs in Terminal. Use the `Stop run` button in the browser or `Ctrl+C` in the Terminal window that launched the GUI.
+The GUI stores a small local history in `.gui-history.json` inside the project folder.
 
 ### Basic example
 

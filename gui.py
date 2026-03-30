@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -16,6 +17,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+
+STARTING_INPUT_RE = re.compile(r'^\[Site (\d+)/(\d+)\] Starting input: (.+)$')
+PAGE_START_RE = re.compile(r'^\[(\d+)/(\d+)\] Starting (https?://\S+)$')
+VIEWPORT_RE = re.compile(r'^\[(\d+)/(\d+)\] .+ -> viewport (\d+)/(\d+): ([^ ]+) \((\d+)x(\d+)\)$')
+PAGE_FINISH_RE = re.compile(r'^\[(\d+)/(\d+)\] Finished (https?://\S+) \|')
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -135,6 +141,10 @@ HTML_PAGE = """<!DOCTYPE html>
       background: var(--accent-2);
       color: var(--accent);
     }
+    button.pause {
+      background: #ece8f7;
+      color: #5a3ea1;
+    }
     button.warning {
       background: #f5e4e2;
       color: var(--danger);
@@ -171,8 +181,82 @@ HTML_PAGE = """<!DOCTYPE html>
       background: var(--muted);
     }
     .dot.running { background: #d08d11; }
+    .dot.paused { background: #6f56b3; }
+    .dot.stopped { background: #456f62; }
     .dot.finished { background: var(--accent); }
     .dot.failed { background: var(--danger); }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .metric-card {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #fbfcfa;
+    }
+    .metric-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .metric-value {
+      font-size: 15px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+    .progress-shell {
+      margin-top: 14px;
+      border-radius: 999px;
+      background: #e7ece4;
+      overflow: hidden;
+      height: 12px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2a7d67, #8fc1b1);
+      transition: width 180ms ease;
+    }
+    .history-list {
+      display: grid;
+      gap: 10px;
+    }
+    .history-item {
+      display: grid;
+      gap: 4px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfa;
+    }
+    .history-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .history-title {
+      font-weight: 700;
+    }
+    .history-meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .history-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #eef3ef;
+      color: var(--ink);
+    }
     pre {
       margin: 0;
       padding: 16px;
@@ -189,6 +273,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .hidden { display: none !important; }
     @media (max-width: 760px) {
       .grid { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr 1fr; }
       .shell { width: min(100% - 20px, 1100px); margin: 10px auto 24px; }
       .panel, .hero { padding: 16px; }
     }
@@ -268,6 +353,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="field full">
           <div class="button-row">
             <button class="primary" type="submit" id="start-button">Start screenshots</button>
+            <button class="pause" type="button" id="pause-button" disabled>Pause run</button>
             <button class="warning" type="button" id="stop-button" disabled>Stop run</button>
             <button class="secondary" type="button" id="open-output-button" disabled>Open last output</button>
           </div>
@@ -279,6 +365,38 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="status-strip">
         <div class="status-pill"><span class="dot" id="status-dot"></span><span id="status-text">Ready</span></div>
         <div class="meta" id="status-meta">No run started yet.</div>
+      </div>
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="metric-label">Site</div>
+          <div class="metric-value" id="metric-site">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Page progress</div>
+          <div class="metric-value" id="metric-page-progress">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Current page</div>
+          <div class="metric-value" id="metric-current-page">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Viewport</div>
+          <div class="metric-value" id="metric-viewport">-</div>
+        </div>
+      </div>
+      <div class="progress-shell" aria-hidden="true">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="button-row" style="margin-bottom: 10px;">
+        <div class="section-title">Recent runs</div>
+      </div>
+      <div class="history-list" id="history-list">
+        <div class="history-item">
+          <div class="history-meta">No runs yet.</div>
+        </div>
       </div>
     </section>
 
@@ -293,12 +411,19 @@ HTML_PAGE = """<!DOCTYPE html>
   <script>
     const form = document.getElementById('run-form');
     const startButton = document.getElementById('start-button');
+    const pauseButton = document.getElementById('pause-button');
     const stopButton = document.getElementById('stop-button');
     const openOutputButton = document.getElementById('open-output-button');
     const logOutput = document.getElementById('log-output');
     const statusText = document.getElementById('status-text');
     const statusMeta = document.getElementById('status-meta');
     const statusDot = document.getElementById('status-dot');
+    const metricSite = document.getElementById('metric-site');
+    const metricPageProgress = document.getElementById('metric-page-progress');
+    const metricCurrentPage = document.getElementById('metric-current-page');
+    const metricViewport = document.getElementById('metric-viewport');
+    const progressFill = document.getElementById('progress-fill');
+    const historyList = document.getElementById('history-list');
     const singleField = document.getElementById('single-field');
     const fileField = document.getElementById('file-field');
     const chooseFileButton = document.getElementById('choose-file-button');
@@ -334,9 +459,48 @@ HTML_PAGE = """<!DOCTYPE html>
       statusText.textContent = state.status_text || 'Ready';
       statusMeta.textContent = state.status_meta || 'No run started yet.';
       startButton.disabled = !!state.running;
+      pauseButton.disabled = !state.running;
+      pauseButton.textContent = state.paused ? 'Resume run' : 'Pause run';
       stopButton.disabled = !state.running;
       openOutputButton.disabled = !state.can_open_output;
-      statusDot.className = 'dot ' + (state.running ? 'running' : (state.last_return_code === 0 ? 'finished' : (state.last_return_code === null ? '' : 'failed')));
+      metricSite.textContent = state.site_label || '-';
+      metricPageProgress.textContent = state.page_progress_label || '-';
+      metricCurrentPage.textContent = state.current_url || '-';
+      metricViewport.textContent = state.current_viewport_label || '-';
+      progressFill.style.width = `${state.progress_percent || 0}%`;
+      statusDot.className = 'dot ' + (
+        state.paused ? 'paused' :
+        (state.running ? 'running' :
+        (state.status_text === 'Stopped' ? 'stopped' :
+        (state.last_return_code === 0 ? 'finished' : (state.last_return_code === null ? '' : 'failed'))))
+      );
+      renderHistory(state.recent_runs || []);
+    }
+
+    function renderHistory(entries) {
+      if (!entries.length) {
+        historyList.innerHTML = '<div class="history-item"><div class="history-meta">No runs yet.</div></div>';
+        return;
+      }
+      historyList.innerHTML = entries.map((entry) => `
+        <div class="history-item">
+          <div class="history-top">
+            <div class="history-title">${escapeHtml(entry.label || 'Run')}</div>
+            <div class="history-badge">${escapeHtml(entry.status || 'unknown')}</div>
+          </div>
+          <div class="history-meta">${escapeHtml(entry.started_at || '')}</div>
+          <div class="history-meta">${escapeHtml(entry.summary || '')}</div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
     }
 
     async function pollState() {
@@ -381,6 +545,15 @@ HTML_PAGE = """<!DOCTYPE html>
       const payload = await response.json();
       if (!response.ok) {
         alert(payload.error || 'Could not stop the run.');
+      }
+      setTimeout(pollState, 150);
+    });
+
+    pauseButton.addEventListener('click', async () => {
+      const response = await fetch('/api/pause-toggle', {method: 'POST'});
+      const payload = await response.json();
+      if (!response.ok) {
+        alert(payload.error || 'Could not pause or resume the run.');
       }
       setTimeout(pollState, 150);
     });
@@ -449,6 +622,7 @@ class AppState:
         self.python_path = script_dir / '.venv' / 'bin' / 'python'
         self.script_path = script_dir / 'screenshot.py'
         self.output_root = script_dir / 'screenshots'
+        self.history_path = script_dir / '.gui-history.json'
         self.lock = threading.Lock()
         self.process: Optional[subprocess.Popen[str]] = None
         self.log_text = 'Ready.\n'
@@ -457,18 +631,42 @@ class AppState:
         self.last_output_target: Optional[Path] = None
         self.last_return_code: Optional[int] = None
         self.stop_requested = False
+        self.paused = False
+        self.current_input_label = ''
+        self.current_url = ''
+        self.current_viewport_label = ''
+        self.current_page_index = 0
+        self.total_pages = 0
+        self.pages_completed = 0
+        self.run_started_at = ''
+        self.recent_runs = self._load_history()
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
             can_open_output = bool(self.last_output_target and self.last_output_target.exists())
+            progress_percent = 0
+            if self.total_pages > 0:
+                progress_percent = min(100, int((self.pages_completed / self.total_pages) * 100))
+                if self.current_page_index > self.pages_completed:
+                    progress_percent = min(99, int(((self.current_page_index - 1) / self.total_pages) * 100))
+            page_progress_label = '-'
+            if self.total_pages > 0:
+                page_progress_label = f"Page {max(self.current_page_index, self.pages_completed)}/{self.total_pages} | {self.pages_completed} done"
             return {
                 'running': self.process is not None,
+                'paused': self.paused,
                 'log_text': self.log_text,
                 'status_text': self.status_text,
                 'status_meta': self.status_meta,
                 'can_open_output': can_open_output,
                 'last_output_target': str(self.last_output_target) if self.last_output_target else '',
                 'last_return_code': self.last_return_code,
+                'site_label': self.current_input_label,
+                'current_url': self.current_url,
+                'current_viewport_label': self.current_viewport_label,
+                'page_progress_label': page_progress_label,
+                'progress_percent': progress_percent,
+                'recent_runs': self.recent_runs,
             }
 
     def append_log(self, text: str) -> None:
@@ -476,6 +674,8 @@ class AppState:
             self.log_text += text
             if len(self.log_text) > 200000:
                 self.log_text = self.log_text[-200000:]
+            for line in text.splitlines():
+                self._update_progress_from_line(line.strip())
 
     def set_running(self, process: subprocess.Popen[str], command: list[str]) -> None:
         with self.lock:
@@ -483,6 +683,14 @@ class AppState:
             self.last_return_code = None
             self.last_output_target = None
             self.stop_requested = False
+            self.paused = False
+            self.current_input_label = self._build_input_label(command)
+            self.current_url = ''
+            self.current_viewport_label = '-'
+            self.current_page_index = 0
+            self.total_pages = 0
+            self.pages_completed = 0
+            self.run_started_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self.status_text = 'Running'
             self.status_meta = ' '.join(command)
             self.log_text += '\n' + '=' * 72 + '\n'
@@ -491,15 +699,29 @@ class AppState:
     def set_stopping(self) -> None:
         with self.lock:
             self.stop_requested = True
+            self.paused = False
             self.status_text = 'Stopping'
             self.status_meta = 'Stopping screenshot run...'
             self.log_text += '\nStopping screenshot run...\n'
+
+    def set_paused(self, paused: bool) -> None:
+        with self.lock:
+            self.paused = paused
+            if paused:
+                self.status_text = 'Paused'
+                self.status_meta = 'Run paused by user.'
+                self.log_text += '\nRun paused by user.\n'
+            else:
+                self.status_text = 'Running'
+                self.status_meta = 'Run resumed.'
+                self.log_text += '\nRun resumed.\n'
 
     def finish(self, return_code: int, output_target: Optional[Path]) -> None:
         with self.lock:
             self.process = None
             self.last_return_code = return_code
             self.last_output_target = output_target
+            self.paused = False
             if self.stop_requested:
                 self.status_text = 'Stopped'
                 self.status_meta = 'Run stopped by user.'
@@ -512,7 +734,73 @@ class AppState:
                 self.status_text = 'Failed'
                 self.status_meta = f'Run finished with exit code {return_code}.'
                 self.log_text += f'\nRun finished with exit code {return_code}.\n'
+            self._remember_run(output_target)
             self.stop_requested = False
+
+    def _update_progress_from_line(self, line: str) -> None:
+        if not line:
+            return
+        match = STARTING_INPUT_RE.match(line)
+        if match:
+            self.current_input_label = match.group(3)
+            return
+        match = PAGE_START_RE.match(line)
+        if match:
+            self.current_page_index = int(match.group(1))
+            self.total_pages = int(match.group(2))
+            self.current_url = match.group(3)
+            return
+        match = VIEWPORT_RE.match(line)
+        if match:
+            self.current_viewport_label = f"{match.group(5)} ({match.group(3)}/{match.group(4)})"
+            return
+        match = PAGE_FINISH_RE.match(line)
+        if match:
+            self.pages_completed = max(self.pages_completed, int(match.group(1)))
+            self.current_viewport_label = '-'
+            return
+
+    def _build_input_label(self, command: list[str]) -> str:
+        if '--url' in command:
+            return command[command.index('--url') + 1]
+        if '--url-file' in command:
+            return Path(command[command.index('--url-file') + 1]).name
+        return 'Run'
+
+    def _load_history(self) -> list[dict[str, str]]:
+        if not self.history_path.exists():
+            return []
+        try:
+            data = json.loads(self.history_path.read_text(encoding='utf-8'))
+            if isinstance(data, list):
+                return [entry for entry in data if isinstance(entry, dict)]
+        except Exception:
+            return []
+        return []
+
+    def _save_history(self) -> None:
+        self.history_path.write_text(json.dumps(self.recent_runs, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    def _remember_run(self, output_target: Optional[Path]) -> None:
+        pages_summary = f"{self.pages_completed}/{self.total_pages} pages" if self.total_pages else 'No pages tracked'
+        if self.stop_requested:
+            status_label = 'Stopped'
+        elif self.last_return_code == 0:
+            status_label = 'Finished'
+        else:
+            status_label = 'Failed'
+        entry = {
+            'label': self.current_input_label or 'Run',
+            'status': status_label,
+            'started_at': self.run_started_at or datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'summary': pages_summary + (f" | {output_target}" if output_target else ''),
+        }
+        self.recent_runs.insert(0, entry)
+        self.recent_runs = self.recent_runs[:8]
+        try:
+            self._save_history()
+        except Exception:
+            pass
 
 
 def validate_payload(state: AppState, payload: Dict[str, Any]) -> Optional[str]:
@@ -667,10 +955,17 @@ def stop_run(state: AppState) -> tuple[bool, str]:
     """Stop the active screenshot run if one is still running."""
     with state.lock:
         process = state.process
+        paused = state.paused
     if process is None:
         return False, 'No screenshot run is active.'
 
     state.set_stopping()
+
+    if paused:
+        try:
+            os.killpg(process.pid, signal.SIGCONT)
+        except Exception:
+            pass
 
     try:
         process.terminate()
@@ -699,6 +994,26 @@ def stop_run(state: AppState) -> tuple[bool, str]:
                     pass
 
     threading.Thread(target=force_kill_later, daemon=True).start()
+    return True, ''
+
+
+def toggle_pause_run(state: AppState) -> tuple[bool, str]:
+    """Pause or resume the active screenshot run."""
+    with state.lock:
+        process = state.process
+        paused = state.paused
+    if process is None:
+        return False, 'No screenshot run is active.'
+
+    try:
+        if paused:
+            os.killpg(process.pid, signal.SIGCONT)
+            state.set_paused(False)
+        else:
+            os.killpg(process.pid, signal.SIGSTOP)
+            state.set_paused(True)
+    except Exception as exc:
+        return False, f'Could not pause or resume the screenshot run: {exc}'
     return True, ''
 
 
@@ -767,6 +1082,14 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if self.path == '/api/stop':
             ok, error = stop_run(self.app_state)
+            if not ok:
+                self._send_json({'error': error}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({'ok': True})
+            return
+
+        if self.path == '/api/pause-toggle':
+            ok, error = toggle_pause_run(self.app_state)
             if not ok:
                 self._send_json({'error': error}, status=HTTPStatus.BAD_REQUEST)
                 return
