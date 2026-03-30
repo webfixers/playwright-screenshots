@@ -456,6 +456,7 @@ class AppState:
         self.status_meta = 'No run started yet.'
         self.last_output_target: Optional[Path] = None
         self.last_return_code: Optional[int] = None
+        self.stop_requested = False
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
@@ -481,6 +482,7 @@ class AppState:
             self.process = process
             self.last_return_code = None
             self.last_output_target = None
+            self.stop_requested = False
             self.status_text = 'Running'
             self.status_meta = ' '.join(command)
             self.log_text += '\n' + '=' * 72 + '\n'
@@ -488,6 +490,7 @@ class AppState:
 
     def set_stopping(self) -> None:
         with self.lock:
+            self.stop_requested = True
             self.status_text = 'Stopping'
             self.status_meta = 'Stopping screenshot run...'
             self.log_text += '\nStopping screenshot run...\n'
@@ -497,7 +500,11 @@ class AppState:
             self.process = None
             self.last_return_code = return_code
             self.last_output_target = output_target
-            if return_code == 0:
+            if self.stop_requested:
+                self.status_text = 'Stopped'
+                self.status_meta = 'Run stopped by user.'
+                self.log_text += '\nRun stopped by user.\n'
+            elif return_code == 0:
                 self.status_text = 'Finished'
                 self.status_meta = 'Run finished successfully.'
                 self.log_text += '\nRun finished successfully.\n'
@@ -505,6 +512,7 @@ class AppState:
                 self.status_text = 'Failed'
                 self.status_meta = f'Run finished with exit code {return_code}.'
                 self.log_text += f'\nRun finished with exit code {return_code}.\n'
+            self.stop_requested = False
 
 
 def validate_payload(state: AppState, payload: Dict[str, Any]) -> Optional[str]:
@@ -665,17 +673,23 @@ def stop_run(state: AppState) -> tuple[bool, str]:
     state.set_stopping()
 
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        process.send_signal(signal.SIGINT)
     except Exception:
         try:
-            process.terminate()
+            os.killpg(process.pid, signal.SIGTERM)
         except Exception as exc:
             return False, f'Could not stop the screenshot run: {exc}'
 
     def force_kill_later() -> None:
         try:
-            process.wait(timeout=5)
+            process.wait(timeout=6)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=3)
+                return
+            except Exception:
+                pass
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except Exception:

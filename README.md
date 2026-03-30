@@ -75,7 +75,7 @@ The first GUI version includes:
 - `normal` or `slow` timeout profile
 - `only failed`, include, exclude and max URL options
 - a live log view in the browser during the run
-- a `Stop run` button to stop the active screenshot process
+- a `Stop run` button to stop the active screenshot process cleanly
 - an `Open last output` button after the run finishes
 - a native file chooser for website list files on macOS
 
