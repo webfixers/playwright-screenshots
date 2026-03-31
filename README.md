@@ -113,15 +113,19 @@ What this app does:
 - starts `screenshot.py` directly using the project `.venv`
 - builds and uses its own custom macOS app icon
 - lets you enter a website or sitemap directly in a native window
+- supports both single-website mode and website-list-file mode
 - shows native controls for variant, timeout profile, filters, max URLs, and media blocking
 - shows live run progress and logs in the native app window
+- lets you pause and resume the active run
 - lets you stop the active screenshot run from the native app window
 - lets you open the last generated output directly from the native app window
+- keeps a small native recent-run history and can reopen selected outputs
 - shows the current app version in the native wrapper window
 - includes a `Quit App` button in the native wrapper window
 - keeps using the same existing `screenshot.py` engine and output structure
 
 This is now a first native macOS frontend around the existing Python engine. The separate web GUI is still available, but the app no longer depends on opening it in a browser.
+The native app stores a small local history in `.native-app-history.json` inside the project folder.
 
 ### Basic example
 

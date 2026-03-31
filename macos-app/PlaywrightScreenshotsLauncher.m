@@ -10,27 +10,41 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 @property(nonatomic, strong) NSTextField *progressLabel;
 @property(nonatomic, strong) NSTextField *outputLabel;
 @property(nonatomic, strong) NSTextField *versionLabel;
+@property(nonatomic, strong) NSTextField *inputPromptLabel;
 @property(nonatomic, strong) NSTextField *urlField;
 @property(nonatomic, strong) NSTextField *includeField;
 @property(nonatomic, strong) NSTextField *excludeField;
 @property(nonatomic, strong) NSTextField *maxUrlsField;
+@property(nonatomic, strong) NSPopUpButton *inputModePopup;
 @property(nonatomic, strong) NSPopUpButton *variantPopup;
 @property(nonatomic, strong) NSPopUpButton *timeoutPopup;
 @property(nonatomic, strong) NSButton *onlyFailedButton;
 @property(nonatomic, strong) NSButton *generateIndexButton;
 @property(nonatomic, strong) NSButton *blockMediaButton;
 @property(nonatomic, strong) NSButton *startButton;
+@property(nonatomic, strong) NSButton *pauseButton;
 @property(nonatomic, strong) NSButton *stopButton;
 @property(nonatomic, strong) NSButton *openOutputButton;
+@property(nonatomic, strong) NSButton *chooseFileButton;
 @property(nonatomic, strong) NSButton *revealButton;
 @property(nonatomic, strong) NSButton *quitButton;
+@property(nonatomic, strong) NSPopUpButton *historyPopup;
+@property(nonatomic, strong) NSButton *openHistoryButton;
 @property(nonatomic, strong) NSTextView *logView;
 @property(nonatomic, strong) NSTask *runTask;
 @property(nonatomic, strong) NSPipe *outputPipe;
 @property(nonatomic, strong) NSMutableString *lineBuffer;
 @property(nonatomic, strong) NSURL *lastOutputURL;
+@property(nonatomic, strong) NSURL *selectedFileURL;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *recentRuns;
 @property(nonatomic, assign) BOOL quitAfterShutdown;
 @property(nonatomic, assign) BOOL stopRequested;
+@property(nonatomic, assign) BOOL paused;
+@property(nonatomic, assign) NSInteger currentPageIndex;
+@property(nonatomic, assign) NSInteger totalPages;
+@property(nonatomic, assign) NSInteger pagesCompleted;
+@property(nonatomic, copy) NSString *currentRunLabel;
+@property(nonatomic, copy) NSString *runStartedAt;
 @end
 
 @implementation AppController
@@ -251,6 +265,117 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     return button;
 }
 
+- (NSURL *)historyFileURL {
+    return [[self projectRootURL] URLByAppendingPathComponent:@".native-app-history.json"];
+}
+
+- (NSMutableArray<NSDictionary *> *)loadHistory {
+    NSData *data = [NSData dataWithContentsOfURL:[self historyFileURL]];
+    if (data == nil) {
+        return [NSMutableArray array];
+    }
+    NSError *error = nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (![parsed isKindOfClass:[NSArray class]] || error != nil) {
+        return [NSMutableArray array];
+    }
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (id item in (NSArray *)parsed) {
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            [entries addObject:item];
+        }
+    }
+    return entries;
+}
+
+- (void)saveHistory {
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:self.recentRuns ?: @[] options:NSJSONWritingPrettyPrinted error:&error];
+    if (data == nil || error != nil) {
+        return;
+    }
+    [data writeToURL:[self historyFileURL] atomically:YES];
+}
+
+- (void)refreshHistoryControls {
+    [self.historyPopup removeAllItems];
+    if (self.recentRuns.count == 0) {
+        [self.historyPopup addItemWithTitle:@"No recent runs yet"];
+        self.historyPopup.enabled = NO;
+        return;
+    }
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    for (NSDictionary *entry in self.recentRuns) {
+        NSString *label = entry[@"label"] ?: @"Run";
+        NSString *status = entry[@"status"] ?: @"unknown";
+        NSString *startedAt = entry[@"started_at"] ?: @"";
+        NSString *title = startedAt.length > 0
+            ? [NSString stringWithFormat:@"%@ • %@ • %@", label, status, startedAt]
+            : [NSString stringWithFormat:@"%@ • %@", label, status];
+        [self.historyPopup addItemWithTitle:title];
+    }
+    self.historyPopup.enabled = YES;
+}
+
+- (NSString *)inputModeKey {
+    NSString *selected = self.inputModePopup.selectedItem.title ?: @"Single website";
+    return [selected hasPrefix:@"Website list"] ? @"file" : @"single";
+}
+
+- (void)updateInputModeUI {
+    BOOL fileMode = [[self inputModeKey] isEqualToString:@"file"];
+    self.inputPromptLabel.stringValue = fileMode ? @"Website list file" : @"Website or sitemap";
+    NSString *placeholder = fileMode ? @"/path/to/sites.txt" : @"https://example.com or example.com/sitemap.xml";
+    self.urlField.placeholderString = placeholder;
+    self.urlField.placeholderAttributedString = [[NSAttributedString alloc] initWithString:placeholder attributes:@{
+        NSForegroundColorAttributeName: [self mutedTextColor],
+        NSFontAttributeName: self.urlField.font ?: [NSFont systemFontOfSize:13],
+    }];
+    self.chooseFileButton.hidden = !fileMode;
+    self.chooseFileButton.enabled = fileMode;
+    if (!fileMode && self.selectedFileURL != nil && self.urlField.stringValue.length == 0) {
+        self.selectedFileURL = nil;
+    }
+    [self updateButtons];
+}
+
+- (void)inputModeChanged:(id)sender {
+    (void)sender;
+    [self updateInputModeUI];
+}
+
+- (void)chooseInputFile:(id)sender {
+    (void)sender;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Choose file";
+    panel.message = @"Choose a text file with one website or sitemap per line.";
+    if ([panel runModal] == NSModalResponseOK) {
+        self.selectedFileURL = panel.URL;
+        self.urlField.stringValue = panel.URL.path ?: @"";
+    }
+}
+
+- (void)openSelectedHistory:(id)sender {
+    (void)sender;
+    if (self.recentRuns.count == 0) {
+        return;
+    }
+    NSInteger index = self.historyPopup.indexOfSelectedItem;
+    if (index < 0 || index >= (NSInteger)self.recentRuns.count) {
+        return;
+    }
+    NSDictionary *entry = self.recentRuns[(NSUInteger)index];
+    NSString *path = entry[@"output_path"] ?: @"";
+    if (path.length == 0) {
+        return;
+    }
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
+}
+
 - (void)applyStyleToButton:(NSButton *)button role:(NSString *)role enabled:(BOOL)enabled {
     button.enabled = YES;
     button.alphaValue = 1.0;
@@ -268,8 +393,9 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
 - (void)buildWindow {
     self.lineBuffer = [NSMutableString string];
+    self.recentRuns = [self loadHistory];
 
-    NSRect frame = NSMakeRect(0, 0, 860, 760);
+    NSRect frame = NSMakeRect(0, 0, 860, 860);
     self.window = [[NSWindow alloc] initWithContentRect:frame
                                               styleMask:(NSWindowStyleMaskTitled |
                                                          NSWindowStyleMaskClosable |
@@ -289,81 +415,98 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     NSTextField *titleLabel = [self labelWithString:@"Playwright Screenshots"
                                                font:[NSFont boldSystemFontOfSize:30]
                                               color:[NSColor colorWithCalibratedWhite:0.15 alpha:1.0]
-                                              frame:NSMakeRect(left, 690, width - 48, 36)];
+                                              frame:NSMakeRect(left, 790, width - 48, 36)];
     NSTextField *subtitleLabel = [self labelWithString:@"Native macOS app for running Playwright screenshot jobs without a browser or Terminal window."
                                                   font:[NSFont systemFontOfSize:13]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(left, 666, width - 48, 18)];
+                                                 frame:NSMakeRect(left, 766, width - 48, 18)];
 
-    NSTextField *urlPrompt = [self labelWithString:@"Website or sitemap"
+    NSTextField *inputModePrompt = [self labelWithString:@"Input mode"
+                                                    font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                   color:[self bodyTextColor]
+                                                   frame:NSMakeRect(left, 724, 120, 18)];
+    self.inputModePopup = [self popupWithItems:@[@"Single website", @"Website list file"] frame:NSMakeRect(left, 692, 180, 28)];
+    self.inputModePopup.target = self;
+    self.inputModePopup.action = @selector(inputModeChanged:);
+
+    self.inputPromptLabel = [self labelWithString:@"Website or sitemap"
                                               font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                              color:[self bodyTextColor]
-                                             frame:NSMakeRect(left, 624, 240, 18)];
-    self.urlField = [self inputFieldWithFrame:NSMakeRect(left, 592, width - 48, 28)
+                                             frame:NSMakeRect(left, 652, 240, 18)];
+    self.urlField = [self inputFieldWithFrame:NSMakeRect(left, 620, width - 48 - 110, 28)
                                    placeholder:@"https://example.com or example.com/sitemap.xml"];
+    self.chooseFileButton = [self buttonWithTitle:@"Choose File" action:@selector(chooseInputFile:) frame:NSMakeRect(width - 24 - 98, 620, 98, 28)];
 
     NSTextField *variantPrompt = [self labelWithString:@"Variant"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(left, 552, 120, 18)];
-    self.variantPopup = [self popupWithItems:@[@"basic", @"extended"] frame:NSMakeRect(left, 520, 180, 28)];
+                                                 frame:NSMakeRect(left, 580, 120, 18)];
+    self.variantPopup = [self popupWithItems:@[@"basic", @"extended"] frame:NSMakeRect(left, 548, 180, 28)];
 
     NSTextField *timeoutPrompt = [self labelWithString:@"Timeout profile"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(232, 552, 140, 18)];
-    self.timeoutPopup = [self popupWithItems:@[@"normal", @"slow"] frame:NSMakeRect(232, 520, 180, 28)];
+                                                 frame:NSMakeRect(232, 580, 140, 18)];
+    self.timeoutPopup = [self popupWithItems:@[@"normal", @"slow"] frame:NSMakeRect(232, 548, 180, 28)];
 
     NSTextField *maxPrompt = [self labelWithString:@"Max URLs"
                                               font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                              color:[self bodyTextColor]
-                                             frame:NSMakeRect(440, 552, 120, 18)];
-    self.maxUrlsField = [self inputFieldWithFrame:NSMakeRect(440, 520, 110, 28) placeholder:@"Optional"];
+                                             frame:NSMakeRect(440, 580, 120, 18)];
+    self.maxUrlsField = [self inputFieldWithFrame:NSMakeRect(440, 548, 110, 28) placeholder:@"Optional"];
 
     NSTextField *includePrompt = [self labelWithString:@"Include filters"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(left, 480, 140, 18)];
-    self.includeField = [self inputFieldWithFrame:NSMakeRect(left, 448, 388, 28)
+                                                 frame:NSMakeRect(left, 508, 140, 18)];
+    self.includeField = [self inputFieldWithFrame:NSMakeRect(left, 476, 388, 28)
                                        placeholder:@"/blog/,/news/"];
 
     NSTextField *excludePrompt = [self labelWithString:@"Exclude filters"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(424, 480, 140, 18)];
-    self.excludeField = [self inputFieldWithFrame:NSMakeRect(424, 448, 412, 28)
+                                                 frame:NSMakeRect(424, 508, 140, 18)];
+    self.excludeField = [self inputFieldWithFrame:NSMakeRect(424, 476, 412, 28)
                                        placeholder:@"/tag/,/author/"];
 
-    self.onlyFailedButton = [self checkboxWithTitle:@"Only failed" frame:NSMakeRect(left, 410, 120, 18)];
-    self.generateIndexButton = [self checkboxWithTitle:@"Generate HTML index" frame:NSMakeRect(152, 410, 170, 18)];
-    self.blockMediaButton = [self checkboxWithTitle:@"Block third-party media" frame:NSMakeRect(334, 410, 190, 18)];
+    self.onlyFailedButton = [self checkboxWithTitle:@"Only failed" frame:NSMakeRect(left, 438, 120, 18)];
+    self.generateIndexButton = [self checkboxWithTitle:@"Generate HTML index" frame:NSMakeRect(152, 438, 170, 18)];
+    self.blockMediaButton = [self checkboxWithTitle:@"Block third-party media" frame:NSMakeRect(334, 438, 190, 18)];
     self.generateIndexButton.state = NSControlStateValueOn;
 
-    self.startButton = [self buttonWithTitle:@"Start Run" action:@selector(startRun:) frame:NSMakeRect(left, 366, 118, 32)];
-    self.stopButton = [self buttonWithTitle:@"Stop Run" action:@selector(stopRun:) frame:NSMakeRect(154, 366, 118, 32)];
-    self.openOutputButton = [self buttonWithTitle:@"Open Last Output" action:@selector(openLastOutput:) frame:NSMakeRect(284, 366, 140, 32)];
-    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:) frame:NSMakeRect(436, 366, 170, 32)];
+    self.startButton = [self buttonWithTitle:@"Start Run" action:@selector(startRun:) frame:NSMakeRect(left, 394, 118, 32)];
+    self.pauseButton = [self buttonWithTitle:@"Pause Run" action:@selector(togglePauseRun:) frame:NSMakeRect(154, 394, 118, 32)];
+    self.stopButton = [self buttonWithTitle:@"Stop Run" action:@selector(stopRun:) frame:NSMakeRect(284, 394, 118, 32)];
+    self.openOutputButton = [self buttonWithTitle:@"Open Last Output" action:@selector(openLastOutput:) frame:NSMakeRect(414, 394, 140, 32)];
+    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:) frame:NSMakeRect(566, 394, 170, 32)];
     self.quitButton = [self buttonWithTitle:@"Quit App" action:@selector(quitApp:) frame:NSMakeRect(width - 24 - 118, 24, 118, 32)];
 
     self.statusLabel = [self labelWithString:@"Ready"
                                         font:[NSFont boldSystemFontOfSize:18]
                                        color:[NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0]
-                                       frame:NSMakeRect(left, 322, 240, 22)];
+                                       frame:NSMakeRect(left, 350, 240, 22)];
     self.detailLabel = [self labelWithString:@"Fill in a website or sitemap above to start a native screenshot run."
                                         font:[NSFont systemFontOfSize:13]
                                        color:[self bodyTextColor]
-                                       frame:NSMakeRect(left, 300, width - 48, 18)];
+                                       frame:NSMakeRect(left, 328, width - 48, 18)];
     self.progressLabel = [self labelWithString:@"No active run."
                                           font:[NSFont systemFontOfSize:13]
                                          color:[self bodyTextColor]
-                                         frame:NSMakeRect(left, 276, width - 48, 18)];
+                                         frame:NSMakeRect(left, 304, width - 48, 18)];
     self.outputLabel = [self labelWithString:@"Last output: not available yet."
                                         font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
                                        color:[self mutedTextColor]
-                                       frame:NSMakeRect(left, 254, width - 48, 18)];
+                                       frame:NSMakeRect(left, 282, width - 48, 18)];
     self.outputLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 
-    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(left, 72, width - 48, 168)];
+    NSTextField *historyLabel = [self labelWithString:@"Recent runs"
+                                                 font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                color:[self bodyTextColor]
+                                                frame:NSMakeRect(left, 246, 120, 18)];
+    self.historyPopup = [self popupWithItems:@[] frame:NSMakeRect(left, 212, width - 48 - 150, 28)];
+    self.openHistoryButton = [self buttonWithTitle:@"Open Selected" action:@selector(openSelectedHistory:) frame:NSMakeRect(width - 24 - 130, 212, 130, 28)];
+
+    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(left, 72, width - 48, 124)];
     logScrollView.hasVerticalScroller = YES;
     logScrollView.borderType = NSNoBorder;
     logScrollView.drawsBackground = NO;
@@ -384,16 +527,19 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
                                         frame:NSMakeRect(left, 30, 160, 16)];
 
     for (NSView *view in @[
-        titleLabel, subtitleLabel, urlPrompt, self.urlField, variantPrompt, self.variantPopup,
+        titleLabel, subtitleLabel, inputModePrompt, self.inputModePopup, self.inputPromptLabel, self.urlField, self.chooseFileButton, variantPrompt, self.variantPopup,
         timeoutPrompt, self.timeoutPopup, maxPrompt, self.maxUrlsField, includePrompt,
         self.includeField, excludePrompt, self.excludeField, self.onlyFailedButton,
-        self.generateIndexButton, self.blockMediaButton, self.startButton, self.stopButton,
+        self.generateIndexButton, self.blockMediaButton, self.startButton, self.pauseButton, self.stopButton,
         self.openOutputButton, self.revealButton, self.statusLabel, self.detailLabel,
-        self.progressLabel, self.outputLabel, logScrollView, self.versionLabel, self.quitButton
+        self.progressLabel, self.outputLabel, historyLabel, self.historyPopup, self.openHistoryButton,
+        logScrollView, self.versionLabel, self.quitButton
     ]) {
         [content addSubview:view];
     }
 
+    [self updateInputModeUI];
+    [self refreshHistoryControls];
     [self updateButtons];
     [self appendLog:@"Native launcher ready.\n"];
 }
@@ -410,8 +556,24 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     return self.runTask != nil && self.runTask.isRunning;
 }
 
+- (BOOL)canPauseRun {
+    return self.runTask != nil && self.runTask.isRunning;
+}
+
 - (BOOL)canOpenOutput {
     return self.lastOutputURL != nil;
+}
+
+- (BOOL)canOpenSelectedHistory {
+    if (self.recentRuns.count == 0) {
+        return NO;
+    }
+    NSInteger index = self.historyPopup.indexOfSelectedItem;
+    if (index < 0 || index >= (NSInteger)self.recentRuns.count) {
+        return NO;
+    }
+    NSString *path = self.recentRuns[(NSUInteger)index][@"output_path"] ?: @"";
+    return path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path];
 }
 
 - (NSURL *)projectRootURL {
@@ -445,10 +607,17 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 }
 
 - (NSArray<NSString *> *)currentCommandArgumentsWithError:(NSString **)errorMessage {
-    NSString *url = [self trimmedValue:self.urlField.stringValue ?: @""];
-    if (url.length == 0) {
+    BOOL fileMode = [[self inputModeKey] isEqualToString:@"file"];
+    NSString *inputValue = [self trimmedValue:self.urlField.stringValue ?: @""];
+    if (inputValue.length == 0) {
         if (errorMessage != NULL) {
-            *errorMessage = @"Enter a website or sitemap first.";
+            *errorMessage = fileMode ? @"Choose a website list file first." : @"Enter a website or sitemap first.";
+        }
+        return nil;
+    }
+    if (fileMode && ![[NSFileManager defaultManager] fileExistsAtPath:inputValue]) {
+        if (errorMessage != NULL) {
+            *errorMessage = [NSString stringWithFormat:@"List file not found: %@", inputValue];
         }
         return nil;
     }
@@ -468,8 +637,6 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithArray:@[
         @"-u",
         scriptURL.path,
-        @"--url",
-        url,
         @"--variant",
         self.variantPopup.selectedItem.title.lowercaseString ?: @"basic",
         @"--timeout-profile",
@@ -478,6 +645,11 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
         @"--event-stream",
         @"jsonl",
     ]];
+    if (fileMode) {
+        [arguments addObjectsFromArray:@[@"--url-file", inputValue]];
+    } else {
+        [arguments addObjectsFromArray:@[@"--url", inputValue]];
+    }
 
     if (self.onlyFailedButton.state == NSControlStateValueOn) {
         [arguments addObject:@"--only-failed"];
@@ -512,11 +684,44 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     self.includeField.editable = enabled;
     self.excludeField.editable = enabled;
     self.maxUrlsField.editable = enabled;
+    self.inputModePopup.enabled = enabled;
     self.variantPopup.enabled = enabled;
     self.timeoutPopup.enabled = enabled;
     self.onlyFailedButton.enabled = enabled;
     self.generateIndexButton.enabled = enabled;
     self.blockMediaButton.enabled = enabled;
+    self.chooseFileButton.enabled = enabled && [[self inputModeKey] isEqualToString:@"file"];
+}
+
+- (void)setPausedState:(BOOL)paused {
+    self.paused = paused;
+    if (paused) {
+        [self setStatus:@"Paused" detail:@"Run paused by user."];
+    } else if (self.runTask != nil && self.runTask.isRunning && !self.stopRequested) {
+        [self setStatus:@"Running" detail:@"The screenshot engine is active."];
+    }
+    [self updateButtons];
+}
+
+- (void)rememberCurrentRunInHistory {
+    NSString *status = self.stopRequested ? @"Stopped" : ([self.statusLabel.stringValue length] > 0 ? self.statusLabel.stringValue : @"Finished");
+    NSString *summary = self.totalPages > 0
+        ? [NSString stringWithFormat:@"%ld/%ld pages", (long)MAX(self.pagesCompleted, self.currentPageIndex > 0 ? self.currentPageIndex - 1 : 0), (long)self.totalPages]
+        : (self.detailLabel.stringValue ?: @"");
+    NSString *outputPath = self.lastOutputURL.path ?: @"";
+    NSDictionary *entry = @{
+        @"label": self.currentRunLabel ?: @"Run",
+        @"status": status,
+        @"started_at": self.runStartedAt ?: @"",
+        @"summary": summary ?: @"",
+        @"output_path": outputPath,
+    };
+    [self.recentRuns insertObject:entry atIndex:0];
+    while (self.recentRuns.count > 8) {
+        [self.recentRuns removeLastObject];
+    }
+    [self saveHistory];
+    [self refreshHistoryControls];
 }
 
 - (void)startRun:(id)sender {
@@ -549,6 +754,18 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
     self.lastOutputURL = nil;
     self.stopRequested = NO;
+    self.paused = NO;
+    self.currentPageIndex = 0;
+    self.totalPages = 0;
+    self.pagesCompleted = 0;
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    self.runStartedAt = [formatter stringFromDate:[NSDate date]];
+    if ([[self inputModeKey] isEqualToString:@"file"]) {
+        self.currentRunLabel = [self.urlField.stringValue lastPathComponent];
+    } else {
+        self.currentRunLabel = [self trimmedValue:self.urlField.stringValue ?: @""];
+    }
     [self.lineBuffer setString:@""];
     self.logView.string = @"";
     [self setStatus:@"Starting"
@@ -660,6 +877,9 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     if ([name isEqualToString:@"site_started"]) {
         NSString *domain = event[@"domain"] ?: @"site";
         NSString *runFolder = event[@"run_folder"] ?: @"";
+        if (![[self inputModeKey] isEqualToString:@"file"]) {
+            self.currentRunLabel = domain;
+        }
         self.progressLabel.stringValue = [NSString stringWithFormat:@"Preparing %@", domain];
         if ([runFolder isKindOfClass:[NSString class]] && runFolder.length > 0) {
             self.outputLabel.stringValue = [NSString stringWithFormat:@"Run folder: %@", runFolder];
@@ -690,6 +910,8 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
         NSNumber *pageIndex = event[@"page_index"];
         NSNumber *totalPages = event[@"total_pages"];
         NSString *url = event[@"url"] ?: @"";
+        self.currentPageIndex = pageIndex.integerValue;
+        self.totalPages = totalPages.integerValue;
         self.progressLabel.stringValue = [NSString stringWithFormat:@"Page %@ of %@: %@", pageIndex ?: @0, totalPages ?: @0, url];
         return;
     }
@@ -711,6 +933,8 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     if ([name isEqualToString:@"page_finished"]) {
         NSNumber *successful = event[@"successful_viewports"];
         NSNumber *failed = event[@"failed_viewports"];
+        NSNumber *pageIndex = event[@"page_index"];
+        self.pagesCompleted = MAX(self.pagesCompleted, pageIndex.integerValue);
         self.detailLabel.stringValue = [NSString stringWithFormat:@"Page done. Successful viewports: %@, failed: %@.", successful ?: @0, failed ?: @0];
         return;
     }
@@ -775,6 +999,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     int status = self.runTask.terminationStatus;
     self.runTask = nil;
     self.outputPipe = nil;
+    self.paused = NO;
     [self setInputsEnabled:YES];
 
     if (self.quitAfterShutdown) {
@@ -790,6 +1015,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
                  detail:[NSString stringWithFormat:@"The screenshot engine ended with status %d.", status]];
     }
 
+    [self rememberCurrentRunInHistory];
     self.stopRequested = NO;
     [self updateButtons];
 }
@@ -818,12 +1044,31 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
         return;
     }
     self.stopRequested = YES;
+    if (self.paused) {
+        kill(self.runTask.processIdentifier, SIGCONT);
+        self.paused = NO;
+    }
     [self setStatus:@"Stopping" detail:@"Stopping the active screenshot run..."];
     self.progressLabel.stringValue = @"Waiting for the engine to shut down cleanly...";
     [self appendLog:@"Stopping screenshot run...\n"];
     [self.runTask interrupt];
     [self scheduleForceStop];
     [self updateButtons];
+}
+
+- (void)togglePauseRun:(id)sender {
+    (void)sender;
+    if (![self canPauseRun]) {
+        return;
+    }
+    int signalToSend = self.paused ? SIGCONT : SIGSTOP;
+    if (kill(self.runTask.processIdentifier, signalToSend) == 0) {
+        [self setPausedState:!self.paused];
+        self.progressLabel.stringValue = self.paused
+            ? @"Run paused. Resume whenever you are ready."
+            : @"Run resumed.";
+        [self appendLog:self.paused ? @"Run paused by user.\n" : @"Run resumed.\n"];
+    }
 }
 
 - (void)scheduleForceStop {
@@ -849,18 +1094,27 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
 - (void)updateButtons {
     BOOL canStart = [self canStartRun];
+    BOOL canPause = [self canPauseRun];
     BOOL canStop = [self canStopRun];
     BOOL canOpenOutput = [self canOpenOutput];
+    BOOL canOpenHistory = [self canOpenSelectedHistory];
+    BOOL canChooseFile = !self.chooseFileButton.hidden && [self canStartRun];
 
     self.startButton.title = canStart ? @"Start Run" : @"Running";
+    self.pauseButton.title = self.paused ? @"Resume Run" : @"Pause Run";
     self.stopButton.title = @"Stop Run";
     self.openOutputButton.title = @"Open Last Output";
+    self.chooseFileButton.title = @"Choose File";
+    self.openHistoryButton.title = @"Open Selected";
     self.revealButton.title = @"Open Project Folder";
     self.quitButton.title = @"Quit App";
 
     [self applyStyleToButton:self.startButton role:@"primary" enabled:canStart];
+    [self applyStyleToButton:self.pauseButton role:@"secondary" enabled:canPause];
     [self applyStyleToButton:self.stopButton role:@"danger" enabled:canStop];
     [self applyStyleToButton:self.openOutputButton role:@"secondary" enabled:canOpenOutput];
+    [self applyStyleToButton:self.chooseFileButton role:@"secondary" enabled:canChooseFile];
+    [self applyStyleToButton:self.openHistoryButton role:@"secondary" enabled:canOpenHistory];
     [self applyStyleToButton:self.revealButton role:@"secondary" enabled:YES];
     [self applyStyleToButton:self.quitButton role:@"secondary" enabled:YES];
 }
