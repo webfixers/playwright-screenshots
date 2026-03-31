@@ -52,6 +52,10 @@ import aiohttp
 from playwright.async_api import async_playwright, Browser, Page, Response
 
 
+EVENT_PREFIX = 'EVENT_JSON:'
+ACTIVE_EVENT_STREAM: Optional[str] = None
+
+
 TIMEOUT_PROFILES: Dict[str, Dict[str, int]] = {
     'normal': {
         'request_timeout_ms': 30000,
@@ -108,6 +112,17 @@ BLOCKED_MEDIA_HOSTS = (
     's.ytimg.com',
     'googlevideo.com',
 )
+
+
+def emit_event(event_name: str, **payload: Any) -> None:
+    """Emit a machine-readable event for native app integrations."""
+    if ACTIVE_EVENT_STREAM != 'jsonl':
+        return
+    event_payload = {
+        'event': event_name,
+        **payload,
+    }
+    print(f"{EVENT_PREFIX}{json.dumps(event_payload, ensure_ascii=False)}", flush=True)
 
 
 def slugify(url: str) -> str:
@@ -653,6 +668,13 @@ async def process_url(
     page_dir = os.path.join(run_dir, slug)
     os.makedirs(page_dir, exist_ok=True)
     print(f"[{page_index}/{total_pages}] Starting {url}")
+    emit_event(
+        'page_started',
+        page_index=page_index,
+        total_pages=total_pages,
+        url=url,
+        slug=slug,
+    )
 
     page_successes = 0
     page_failures = 0
@@ -674,6 +696,18 @@ async def process_url(
         print(
             f"[{page_index}/{total_pages}] {slug} -> viewport {viewport_index}/{len(viewports)}: "
             f"{vp_name} ({width}x{height})"
+        )
+        emit_event(
+            'viewport_started',
+            page_index=page_index,
+            total_pages=total_pages,
+            viewport_index=viewport_index,
+            total_viewports=len(viewports),
+            url=url,
+            slug=slug,
+            viewport=vp_name,
+            width=width,
+            height=height,
         )
 
         while attempt <= retries and not success:
@@ -750,6 +784,19 @@ async def process_url(
                         f"{', '.join(result_flags)}"
                     )
                 print(f"[{page_index}/{total_pages}] Saved {vp_name}: {os.path.relpath(screenshot_path, run_dir)}")
+                emit_event(
+                    'viewport_saved',
+                    page_index=page_index,
+                    total_pages=total_pages,
+                    viewport_index=viewport_index,
+                    total_viewports=len(viewports),
+                    url=url,
+                    slug=slug,
+                    viewport=vp_name,
+                    screenshot_path=os.path.relpath(screenshot_path, run_dir),
+                    final_url=final_url,
+                    result_flags=result_flags,
+                )
             except Exception as exc:
                 error_msg = str(exc)
                 attempt += 1
@@ -791,6 +838,15 @@ async def process_url(
     print(
         f"[{page_index}/{total_pages}] Finished {url} | "
         f"successful viewports: {page_successes}, failed viewports: {page_failures}"
+    )
+    emit_event(
+        'page_finished',
+        page_index=page_index,
+        total_pages=total_pages,
+        url=url,
+        slug=slug,
+        successful_viewports=page_successes,
+        failed_viewports=page_failures,
     )
 
 
@@ -866,10 +922,12 @@ def preview_urls(
 
     if total_urls >= large_run_threshold:
         print(f"Warning: this is a large run ({total_urls} URLs).")
+        emit_event('large_run_warning', total_urls=total_urls)
         if sys.stdin.isatty():
             choice = input('Continue? [y/N]: ').strip().lower()
             if choice not in ('y', 'yes'):
                 print('Aborted before starting screenshots.')
+                emit_event('preview_aborted', total_urls=total_urls)
                 return False
         else:
             print('Non-interactive session detected, continuing without confirmation.')
@@ -918,8 +976,25 @@ async def run_for_site(
     print(f"{site_label} Starting input: {raw_input_url}")
     print(f"{site_label} Output folder for this domain: {paths['domain_dir']}")
     print(f"{site_label} Run folder for today: {paths['run_dir']}")
+    emit_event(
+        'site_started',
+        site_index=site_index,
+        total_sites=total_sites,
+        input=raw_input_url,
+        normalized_input=normalized_input_url,
+        domain=domain_slug(normalized_input_url),
+        output_folder=paths['domain_dir'],
+        run_folder=paths['run_dir'],
+    )
     if normalized_input_url != raw_input_url.strip():
         print(f"{site_label} Normalized input: {normalized_input_url}")
+        emit_event(
+            'site_normalized',
+            site_index=site_index,
+            total_sites=total_sites,
+            input=raw_input_url,
+            normalized_input=normalized_input_url,
+        )
 
     urls: List[str] = []
     sitemap_source = normalized_input_url
@@ -927,6 +1002,15 @@ async def run_for_site(
         report_path = paths['report_json']
         if not os.path.exists(report_path):
             print(f"{site_label} No report.json found for this domain. Cannot use --only-failed.", file=sys.stderr)
+            emit_event(
+                'site_failed',
+                site_index=site_index,
+                total_sites=total_sites,
+                input=raw_input_url,
+                normalized_input=normalized_input_url,
+                domain=domain_slug(normalized_input_url),
+                reason='missing_report',
+            )
             return {
                 'input': raw_input_url,
                 'normalized_input': normalized_input_url,
@@ -940,6 +1024,13 @@ async def run_for_site(
         failed_urls: Set[str] = {entry['url'] for entry in past_report if entry['status'] != 'success'}
         urls = sorted(failed_urls)
         print(f"{site_label} Rerunning {len(urls)} previously failed URLs for this domain...")
+        emit_event(
+            'site_urls_loaded',
+            site_index=site_index,
+            total_sites=total_sites,
+            source='failed_report',
+            total_urls=len(urls),
+        )
     else:
         print(f"{site_label} Fetching sitemap(s)...")
         sitemap_urls, resolved_sitemap_source = await parse_sitemaps(
@@ -950,13 +1041,41 @@ async def run_for_site(
             sitemap_source = resolved_sitemap_source
             print(f"{site_label} Using sitemap source: {resolved_sitemap_source}")
         print(f"{site_label} Found {len(sitemap_urls)} URLs in sitemap(s).")
+        emit_event(
+            'site_urls_loaded',
+            site_index=site_index,
+            total_sites=total_sites,
+            source='sitemap',
+            sitemap_source=sitemap_source,
+            total_urls=len(sitemap_urls),
+        )
         urls = sorted(sitemap_urls)
 
     urls, filter_summary = apply_url_filters(urls, include_terms, exclude_terms, args.max_urls)
+    emit_event(
+        'site_urls_filtered',
+        site_index=site_index,
+        total_sites=total_sites,
+        total_urls=len(urls),
+        filtered_out=filter_summary['filtered_out'],
+        limited_out=filter_summary['limited_out'],
+        include_terms=include_terms,
+        exclude_terms=exclude_terms,
+        max_urls=args.max_urls,
+    )
 
     total_pages = len(urls)
     if total_pages == 0:
         print(f"{site_label} No URLs to process.", file=sys.stderr)
+        emit_event(
+            'site_failed',
+            site_index=site_index,
+            total_sites=total_sites,
+            input=raw_input_url,
+            normalized_input=normalized_input_url,
+            domain=domain_slug(normalized_input_url),
+            reason='no_urls',
+        )
         return {
             'input': raw_input_url,
             'normalized_input': normalized_input_url,
@@ -966,6 +1085,15 @@ async def run_for_site(
             'reason': 'no_urls',
         }
     if not preview_urls(urls, args.only_failed, include_terms, exclude_terms, filter_summary, args.max_urls):
+        emit_event(
+            'site_skipped',
+            site_index=site_index,
+            total_sites=total_sites,
+            input=raw_input_url,
+            normalized_input=normalized_input_url,
+            domain=domain_slug(normalized_input_url),
+            reason='aborted_by_user',
+        )
         return {
             'input': raw_input_url,
             'normalized_input': normalized_input_url,
@@ -1033,6 +1161,21 @@ async def run_for_site(
     print(
         f"{site_label} Viewport results -> success: {status_counts.get('success', 0)}, failed: {status_counts.get('failed', 0)}"
     )
+    emit_event(
+        'site_finished',
+        site_index=site_index,
+        total_sites=total_sites,
+        input=raw_input_url,
+        normalized_input=normalized_input_url,
+        domain=domain_slug(normalized_input_url),
+        pages_processed=total_pages,
+        successful_pages=successful_pages,
+        failed_pages=failed_pages,
+        successful_viewports=status_counts.get('success', 0),
+        failed_viewports=status_counts.get('failed', 0),
+        run_folder=paths['run_dir'],
+        index_html=paths['index_html'] if args.generate_index else '',
+    )
 
     return {
         'input': raw_input_url,
@@ -1046,6 +1189,7 @@ async def run_for_site(
 
 
 async def main() -> None:
+    global ACTIVE_EVENT_STREAM
     parser = argparse.ArgumentParser(description='Website screenshotter using Playwright.')
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument('--url', help='Root URL, bare domain, or sitemap URL (e.g. example.com or https://example.com/sitemap.xml).')
@@ -1064,6 +1208,8 @@ async def main() -> None:
                         help='Timing profile for page loading and waits (default: normal). Use slow for heavier sites.')
     parser.add_argument('--block-third-party-media', action='store_true',
                         help='Block known third-party video/embed hosts such as YouTube during capture. This may reduce browser prompts but can change layout.')
+    parser.add_argument('--event-stream', choices=['jsonl'],
+                        help='Emit machine-readable progress events for app integrations.')
     parser.add_argument('--only-failed', action='store_true',
                         help='Reprocess only pages marked as failed in the last report.json file for this domain.')
     parser.add_argument('--generate-index', action='store_true',
@@ -1087,6 +1233,7 @@ async def main() -> None:
     include_terms = parse_filter_terms(args.include)
     exclude_terms = parse_filter_terms(args.exclude)
     timing_profile = TIMEOUT_PROFILES[args.timeout_profile]
+    ACTIVE_EVENT_STREAM = args.event_stream
 
     basic_viewports = [
         ('desktop', 1400, 900),
@@ -1115,6 +1262,16 @@ async def main() -> None:
         site_inputs = [args.url]
 
     should_open_output = len(site_inputs) == 1
+    emit_event(
+        'run_started',
+        input_mode='url_file' if args.url_file else 'url',
+        total_sites=len(site_inputs),
+        variant=args.variant,
+        timeout_profile=args.timeout_profile,
+        only_failed=args.only_failed,
+        generate_index=args.generate_index,
+        block_third_party_media=args.block_third_party_media,
+    )
     if len(site_inputs) > 1 and not args.no_open:
         print('Batch mode detected: automatic opening is skipped to avoid opening many windows.')
     print(f"Using timeout profile: {args.timeout_profile}")
@@ -1139,8 +1296,10 @@ async def main() -> None:
                     len(site_inputs),
                 )
                 site_results.append(result)
+                emit_event('site_result', **result)
                 if result['status'] == 'skipped':
                     print('Batch run aborted by user.')
+                    emit_event('run_aborted', reason='aborted_by_user')
                     break
         finally:
             await browser.close()
@@ -1162,10 +1321,18 @@ async def main() -> None:
                 f" - {result['domain']}: {result['status']} "
                 f"({result.get('pages_processed', 0)} pages)"
             )
+    emit_event(
+        'run_finished',
+        total_sites=len(site_results),
+        successful_sites=sum(1 for result in site_results if result['status'] == 'success'),
+        failed_sites=sum(1 for result in site_results if result['status'] == 'failed'),
+        skipped_sites=sum(1 for result in site_results if result['status'] == 'skipped'),
+    )
 
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        emit_event('run_aborted', reason='keyboard_interrupt')
         print('Aborted by user')

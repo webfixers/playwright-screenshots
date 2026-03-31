@@ -58,7 +58,7 @@ For batch runs, you can also provide a text file with one website or sitemap ent
 If you prefer not to work in Terminal, you can now also use the local web GUI in `gui.py` or launch it via `run-screenshots-gui.command`.
 The GUI is now a small local web interface started by `gui.py`. It runs locally on your Mac, opens in your browser, and still uses the project `.venv` for the actual screenshot run.
 
-You can also build a small macOS app wrapper that starts the same local web GUI without showing a Terminal window.
+You can also build a native macOS app that runs screenshot jobs directly without showing a Terminal window or opening a browser.
 
 ## GUI usage
 
@@ -91,9 +91,9 @@ The GUI intentionally reuses `screenshot.py` underneath, so the CLI and GUI stay
 Closing the browser tab does not stop the run by itself, because the local GUI server still runs in Terminal. Use the `Stop run` button in the browser or `Ctrl+C` in the Terminal window that launched the GUI.
 The GUI stores a small local history in `.gui-history.json` inside the project folder.
 
-## macOS app wrapper
+## macOS app
 
-If you want a proper `.app` that starts the local web GUI without showing Terminal, build the wrapper once with:
+If you want a proper `.app` that runs screenshot jobs natively without showing Terminal, build the app once with:
 
 ```bash
 cd "/path/to/playwright-screenshots"
@@ -106,20 +106,22 @@ That creates:
 build/Playwright Screenshots.app
 ```
 
-Keep that `.app` inside the project folder so it can still find `.venv` and `gui.py` even if you move the whole project later.
+Keep that `.app` inside the project folder so it can still find `.venv` and `screenshot.py` even if you move the whole project later.
 
 What this app does:
 
-- starts `gui.py` in the background using the project `.venv`
+- starts `screenshot.py` directly using the project `.venv`
 - builds and uses its own custom macOS app icon
-- opens the browser to the local GUI automatically
-- lets you reopen the browser GUI if you close the tab
-- lets you stop the local GUI server from the native app window
+- lets you enter a website or sitemap directly in a native window
+- shows native controls for variant, timeout profile, filters, max URLs, and media blocking
+- shows live run progress and logs in the native app window
+- lets you stop the active screenshot run from the native app window
+- lets you open the last generated output directly from the native app window
 - shows the current app version in the native wrapper window
 - includes a `Quit App` button in the native wrapper window
-- keeps using the same existing `screenshot.py` and output structure
+- keeps using the same existing `screenshot.py` engine and output structure
 
-This is intentionally a wrapper around the current Python/web GUI, not a full native rewrite yet.
+This is now a first native macOS frontend around the existing Python engine. The separate web GUI is still available, but the app no longer depends on opening it in a browser.
 
 ### Basic example
 
@@ -206,7 +208,7 @@ Before screenshots start, the script also shows a short preview of the URLs it i
 
 After a successful run on macOS, the script also opens the output automatically unless you disable that behavior with `--no-open`.
 
-When the GUI is started from the macOS app wrapper, the app itself opens the browser, so `gui.py` now supports a `--no-browser-open` flag for that wrapper flow.
+For native app integrations, `screenshot.py` also supports an internal `--event-stream jsonl` mode so the app can receive structured progress updates while the normal CLI output stays intact.
 
 The `.command` launcher now also supports a few safe extra options:
 

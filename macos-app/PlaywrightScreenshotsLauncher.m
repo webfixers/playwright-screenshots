@@ -1,77 +1,168 @@
 #import <Cocoa/Cocoa.h>
 #import <signal.h>
 
+static NSString *const kEventPrefix = @"EVENT_JSON:";
+
 @interface AppController : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *detailLabel;
-@property(nonatomic, strong) NSTextField *urlLabel;
+@property(nonatomic, strong) NSTextField *progressLabel;
+@property(nonatomic, strong) NSTextField *outputLabel;
 @property(nonatomic, strong) NSTextField *versionLabel;
-@property(nonatomic, strong) NSTextView *logView;
+@property(nonatomic, strong) NSTextField *urlField;
+@property(nonatomic, strong) NSTextField *includeField;
+@property(nonatomic, strong) NSTextField *excludeField;
+@property(nonatomic, strong) NSTextField *maxUrlsField;
+@property(nonatomic, strong) NSPopUpButton *variantPopup;
+@property(nonatomic, strong) NSPopUpButton *timeoutPopup;
+@property(nonatomic, strong) NSButton *onlyFailedButton;
+@property(nonatomic, strong) NSButton *generateIndexButton;
+@property(nonatomic, strong) NSButton *blockMediaButton;
 @property(nonatomic, strong) NSButton *startButton;
-@property(nonatomic, strong) NSButton *openButton;
 @property(nonatomic, strong) NSButton *stopButton;
+@property(nonatomic, strong) NSButton *openOutputButton;
 @property(nonatomic, strong) NSButton *revealButton;
 @property(nonatomic, strong) NSButton *quitButton;
-@property(nonatomic, strong) NSTask *serverTask;
+@property(nonatomic, strong) NSTextView *logView;
+@property(nonatomic, strong) NSTask *runTask;
 @property(nonatomic, strong) NSPipe *outputPipe;
 @property(nonatomic, strong) NSMutableString *lineBuffer;
-@property(nonatomic, strong) NSURL *serverURL;
-@property(nonatomic, assign) BOOL browserOpenedAutomatically;
+@property(nonatomic, strong) NSURL *lastOutputURL;
 @property(nonatomic, assign) BOOL quitAfterShutdown;
+@property(nonatomic, assign) BOOL stopRequested;
 @end
 
 @implementation AppController
 
+- (BOOL)isDarkAppearance {
+    if (self.window == nil) {
+        return NO;
+    }
+    NSAppearanceName bestMatch = [self.window.effectiveAppearance bestMatchFromAppearancesWithNames:@[
+        NSAppearanceNameAqua,
+        NSAppearanceNameDarkAqua
+    ]];
+    return [bestMatch isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+- (NSColor *)windowBackgroundColor {
+    return [NSColor windowBackgroundColor];
+}
+
 - (NSColor *)bodyTextColor {
-    return [NSColor colorWithCalibratedRed:0.33 green:0.39 blue:0.37 alpha:1.0];
+    return [NSColor labelColor];
+}
+
+- (NSColor *)mutedTextColor {
+    return [NSColor secondaryLabelColor];
 }
 
 - (NSColor *)buttonBackgroundColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    BOOL isDark = [self isDarkAppearance];
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.91 green:0.92 blue:0.90 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.20 green:0.22 blue:0.21 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.91 green:0.92 blue:0.90 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
-        return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.18 green:0.53 blue:0.42 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
     }
     if ([role isEqualToString:@"danger"]) {
-        return [NSColor colorWithCalibratedRed:0.95 green:0.89 blue:0.89 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.34 green:0.19 blue:0.20 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.95 green:0.89 blue:0.89 alpha:1.0];
     }
-    return [NSColor colorWithCalibratedRed:0.90 green:0.95 blue:0.92 alpha:1.0];
+    return isDark
+        ? [NSColor colorWithCalibratedRed:0.18 green:0.24 blue:0.22 alpha:1.0]
+        : [NSColor colorWithCalibratedRed:0.90 green:0.95 blue:0.92 alpha:1.0];
 }
 
 - (NSColor *)buttonBorderColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    BOOL isDark = [self isDarkAppearance];
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.71 green:0.75 blue:0.71 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.35 green:0.39 blue:0.37 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.71 green:0.75 blue:0.71 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
-        return [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.29 green:0.67 blue:0.54 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.10 green:0.38 blue:0.30 alpha:1.0];
     }
     if ([role isEqualToString:@"danger"]) {
-        return [NSColor colorWithCalibratedRed:0.78 green:0.55 blue:0.55 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.72 green:0.44 blue:0.45 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.78 green:0.55 blue:0.55 alpha:1.0];
     }
-    return [NSColor colorWithCalibratedRed:0.61 green:0.76 blue:0.69 alpha:1.0];
+    return isDark
+        ? [NSColor colorWithCalibratedRed:0.41 green:0.58 blue:0.52 alpha:1.0]
+        : [NSColor colorWithCalibratedRed:0.61 green:0.76 blue:0.69 alpha:1.0];
 }
 
 - (NSColor *)buttonTitleColorForRole:(NSString *)role enabled:(BOOL)enabled {
+    BOOL isDark = [self isDarkAppearance];
     if (!enabled) {
-        return [NSColor colorWithCalibratedRed:0.38 green:0.44 blue:0.41 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.60 green:0.65 blue:0.63 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.38 green:0.44 blue:0.41 alpha:1.0];
     }
     if ([role isEqualToString:@"primary"]) {
         return [NSColor whiteColor];
     }
     if ([role isEqualToString:@"danger"]) {
-        return [NSColor colorWithCalibratedRed:0.46 green:0.16 blue:0.18 alpha:1.0];
+        return isDark
+            ? [NSColor colorWithCalibratedRed:0.97 green:0.78 blue:0.78 alpha:1.0]
+            : [NSColor colorWithCalibratedRed:0.46 green:0.16 blue:0.18 alpha:1.0];
     }
-    return [NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0];
+    return isDark
+        ? [NSColor colorWithCalibratedRed:0.78 green:0.92 blue:0.86 alpha:1.0]
+        : [NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
+    [self buildMainMenu];
     [self buildWindow];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    [self startServer:nil];
+}
+
+- (void)buildMainMenu {
+    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
+
+    NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [mainMenu addItem:appMenuItem];
+
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Playwright Screenshots"];
+    NSString *appName = [NSRunningApplication currentApplication].localizedName ?: @"Playwright Screenshots";
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Quit %@", appName]
+                                                      action:@selector(terminate:)
+                                               keyEquivalent:@"q"];
+    [appMenu addItem:quitItem];
+    appMenuItem.submenu = appMenu;
+
+    NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [mainMenu addItem:editMenuItem];
+
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    NSArray<NSMenuItem *> *editItems = @[
+        [[NSMenuItem alloc] initWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"],
+        [[NSMenuItem alloc] initWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"],
+        [NSMenuItem separatorItem],
+        [[NSMenuItem alloc] initWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"],
+        [[NSMenuItem alloc] initWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"],
+        [[NSMenuItem alloc] initWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"],
+        [[NSMenuItem alloc] initWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"],
+    ];
+    for (NSMenuItem *item in editItems) {
+        [editMenu addItem:item];
+    }
+    editMenuItem.submenu = editMenu;
+
+    [NSApp setMainMenu:mainMenu];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -81,179 +172,16 @@
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
-    if (self.serverTask != nil && self.serverTask.isRunning) {
+    if (self.runTask != nil && self.runTask.isRunning) {
         self.quitAfterShutdown = YES;
-        [self shutdownServerAndRunIfNeeded];
+        [self stopRun:nil];
         return NSTerminateLater;
     }
     return NSTerminateNow;
 }
 
-- (void)buildWindow {
-    self.lineBuffer = [NSMutableString string];
-
-    NSRect frame = NSMakeRect(0, 0, 720, 520);
-    self.window = [[NSWindow alloc] initWithContentRect:frame
-                                              styleMask:(NSWindowStyleMaskTitled |
-                                                         NSWindowStyleMaskClosable |
-                                                         NSWindowStyleMaskMiniaturizable)
-                                                backing:NSBackingStoreBuffered
-                                                  defer:NO];
-    self.window.title = @"Playwright Screenshots";
-    self.window.delegate = self;
-
-    NSView *content = self.window.contentView;
-    content.wantsLayer = YES;
-    content.layer.backgroundColor = [[NSColor colorWithRed:0.95 green:0.96 blue:0.93 alpha:1.0] CGColor];
-
-    NSTextField *titleLabel = [self labelWithString:@"Playwright Screenshots"
-                                               font:[NSFont boldSystemFontOfSize:26]
-                                              color:[NSColor colorWithCalibratedWhite:0.15 alpha:1.0]];
-    NSTextField *subtitleLabel = [self labelWithString:@"Native macOS wrapper for the local web GUI. No Terminal window needed."
-                                                  font:[NSFont systemFontOfSize:13]
-                                                 color:[self bodyTextColor]];
-    self.statusLabel = [self labelWithString:@"Starting..."
-                                        font:[NSFont boldSystemFontOfSize:15]
-                                       color:[NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0]];
-    self.detailLabel = [self labelWithString:@"Preparing the local GUI server."
-                                        font:[NSFont systemFontOfSize:13]
-                                       color:[self bodyTextColor]];
-    self.urlLabel = [self labelWithString:@"Browser URL: waiting for local server..."
-                                     font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]
-                                    color:[NSColor colorWithCalibratedRed:0.24 green:0.31 blue:0.29 alpha:1.0]];
-    self.urlLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] ?: @"0.0.0";
-    self.versionLabel = [self labelWithString:[NSString stringWithFormat:@"Version %@", version]
-                                         font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
-                                        color:[self bodyTextColor]];
-
-    self.startButton = [self buttonWithTitle:@"Start GUI" action:@selector(startServer:)];
-    self.openButton = [self buttonWithTitle:@"Open GUI" action:@selector(openGUI:)];
-    self.stopButton = [self buttonWithTitle:@"Stop GUI" action:@selector(stopServer:)];
-    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:)];
-    self.quitButton = [self buttonWithTitle:@"Quit App" action:@selector(quitApp:)];
-
-    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-    logScrollView.hasVerticalScroller = YES;
-    logScrollView.borderType = NSNoBorder;
-    logScrollView.drawsBackground = NO;
-    logScrollView.translatesAutoresizingMaskIntoConstraints = NO;
-
-    self.logView = [[NSTextView alloc] initWithFrame:NSZeroRect];
-    self.logView.editable = NO;
-    self.logView.selectable = YES;
-    self.logView.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
-    self.logView.backgroundColor = [NSColor colorWithCalibratedRed:0.11 green:0.13 blue:0.12 alpha:1.0];
-    self.logView.textColor = [NSColor colorWithCalibratedRed:0.90 green:0.94 blue:0.92 alpha:1.0];
-    self.logView.textContainerInset = NSMakeSize(12, 12);
-    logScrollView.documentView = self.logView;
-
-    NSView *buttonRow = [[NSView alloc] initWithFrame:NSZeroRect];
-    buttonRow.translatesAutoresizingMaskIntoConstraints = NO;
-
-    NSView *footerRow = [[NSView alloc] initWithFrame:NSZeroRect];
-    footerRow.translatesAutoresizingMaskIntoConstraints = NO;
-
-    for (NSView *view in @[titleLabel, subtitleLabel, self.statusLabel, self.detailLabel, self.urlLabel, buttonRow, logScrollView, footerRow]) {
-        view.translatesAutoresizingMaskIntoConstraints = NO;
-        [content addSubview:view];
-    }
-
-    NSArray<NSButton *> *buttons = @[self.startButton, self.openButton, self.stopButton, self.revealButton];
-    for (NSButton *button in buttons) {
-        button.translatesAutoresizingMaskIntoConstraints = NO;
-        [buttonRow addSubview:button];
-        [[button.heightAnchor constraintEqualToConstant:32.0] setActive:YES];
-    }
-    self.quitButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [footerRow addSubview:self.quitButton];
-    self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [footerRow addSubview:self.versionLabel];
-
-    NSDictionary<NSString *, NSView *> *views = @{
-        @"title": titleLabel,
-        @"subtitle": subtitleLabel,
-        @"status": self.statusLabel,
-        @"detail": self.detailLabel,
-        @"url": self.urlLabel,
-        @"buttons": buttonRow,
-        @"log": logScrollView,
-        @"footer": footerRow,
-    };
-
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[title]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[subtitle]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[status]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[detail]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[url]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[buttons]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[log]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-24-[title]-4-[subtitle]-18-[status]-4-[detail]-10-[url]-18-[buttons(32)]-18-[log]-14-[footer(32)]-20-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[footer]-24-|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:views]];
-
-    NSDictionary<NSString *, NSButton *> *buttonViews = @{
-        @"start": self.startButton,
-        @"open": self.openButton,
-        @"stop": self.stopButton,
-        @"reveal": self.revealButton,
-    };
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[start(118)]-12-[open(118)]-12-[stop(118)]-12-[reveal(170)]"
-                                                                                     options:NSLayoutFormatAlignAllCenterY
-                                                                                     metrics:nil
-                                                                                       views:buttonViews]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[start]|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:buttonViews]];
-
-    NSDictionary<NSString *, NSView *> *footerViews = @{
-        @"version": self.versionLabel,
-        @"quit": self.quitButton,
-    };
-    [self.quitButton.widthAnchor constraintEqualToConstant:118.0].active = YES;
-    [self.quitButton.heightAnchor constraintEqualToConstant:32.0].active = YES;
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[version]-12-[quit(118)]|"
-                                                                                     options:NSLayoutFormatAlignAllCenterY
-                                                                                     metrics:nil
-                                                                                       views:footerViews]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[quit]|"
-                                                                                     options:0
-                                                                                     metrics:nil
-                                                                                       views:footerViews]];
-
-    [self updateButtons];
-    [self appendLog:@"Launcher ready.\n"];
-}
-
-- (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {
-    NSTextField *label = [[NSTextField alloc] initWithFrame:NSZeroRect];
+- (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color frame:(NSRect)frame {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
     label.stringValue = string;
     label.bezeled = NO;
     label.drawsBackground = NO;
@@ -264,8 +192,56 @@
     return label;
 }
 
-- (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
+- (NSTextField *)inputFieldWithFrame:(NSRect)frame placeholder:(NSString *)placeholder {
+    NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
+    field.font = [NSFont systemFontOfSize:13];
+    field.placeholderString = placeholder;
+    field.bezelStyle = NSTextFieldRoundedBezel;
+    field.textColor = [NSColor textColor];
+    field.backgroundColor = [NSColor textBackgroundColor];
+    field.drawsBackground = YES;
+    field.bordered = YES;
+    field.focusRingType = NSFocusRingTypeDefault;
+    NSAttributedString *styledPlaceholder = [[NSAttributedString alloc] initWithString:placeholder attributes:@{
+        NSForegroundColorAttributeName: [self mutedTextColor],
+        NSFontAttributeName: field.font ?: [NSFont systemFontOfSize:13],
+    }];
+    field.placeholderAttributedString = styledPlaceholder;
+    return field;
+}
+
+- (NSPopUpButton *)popupWithItems:(NSArray<NSString *> *)items frame:(NSRect)frame {
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:frame pullsDown:NO];
+    popup.font = [NSFont systemFontOfSize:13];
+    if ([popup respondsToSelector:@selector(setContentTintColor:)]) {
+        popup.contentTintColor = [self bodyTextColor];
+    }
+    [popup addItemsWithTitles:items];
+    NSDictionary<NSAttributedStringKey, id> *attributes = @{
+        NSForegroundColorAttributeName: [self bodyTextColor],
+        NSFontAttributeName: popup.font ?: [NSFont systemFontOfSize:13],
+    };
+    for (NSMenuItem *item in popup.itemArray) {
+        item.attributedTitle = [[NSAttributedString alloc] initWithString:item.title attributes:attributes];
+    }
+    return popup;
+}
+
+- (NSButton *)checkboxWithTitle:(NSString *)title frame:(NSRect)frame {
+    NSButton *checkbox = [[NSButton alloc] initWithFrame:frame];
+    checkbox.buttonType = NSButtonTypeSwitch;
+    checkbox.title = title;
+    checkbox.font = [NSFont systemFontOfSize:13];
+    checkbox.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+        NSForegroundColorAttributeName: [self bodyTextColor],
+        NSFontAttributeName: checkbox.font ?: [NSFont systemFontOfSize:13],
+    }];
+    return checkbox;
+}
+
+- (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action frame:(NSRect)frame {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
+    button.frame = frame;
     button.bordered = NO;
     button.buttonType = NSButtonTypeMomentaryPushIn;
     button.wantsLayer = YES;
@@ -276,8 +252,6 @@
 }
 
 - (void)applyStyleToButton:(NSButton *)button role:(NSString *)role enabled:(BOOL)enabled {
-    // Keep the button technically enabled so AppKit does not replace our custom
-    // colors with its own hard-to-read disabled styling.
     button.enabled = YES;
     button.alphaValue = 1.0;
     button.layer.backgroundColor = [self buttonBackgroundColorForRole:role enabled:enabled].CGColor;
@@ -292,16 +266,152 @@
     button.attributedAlternateTitle = styledTitle;
 }
 
-- (BOOL)canStartServer {
-    return !(self.serverTask != nil && self.serverTask.isRunning);
+- (void)buildWindow {
+    self.lineBuffer = [NSMutableString string];
+
+    NSRect frame = NSMakeRect(0, 0, 860, 760);
+    self.window = [[NSWindow alloc] initWithContentRect:frame
+                                              styleMask:(NSWindowStyleMaskTitled |
+                                                         NSWindowStyleMaskClosable |
+                                                         NSWindowStyleMaskMiniaturizable)
+                                                backing:NSBackingStoreBuffered
+                                                  defer:NO];
+    self.window.title = @"Playwright Screenshots";
+    self.window.delegate = self;
+
+    NSView *content = self.window.contentView;
+    content.wantsLayer = YES;
+    content.layer.backgroundColor = [self windowBackgroundColor].CGColor;
+
+    CGFloat left = 24.0;
+    CGFloat width = frame.size.width;
+
+    NSTextField *titleLabel = [self labelWithString:@"Playwright Screenshots"
+                                               font:[NSFont boldSystemFontOfSize:30]
+                                              color:[NSColor colorWithCalibratedWhite:0.15 alpha:1.0]
+                                              frame:NSMakeRect(left, 690, width - 48, 36)];
+    NSTextField *subtitleLabel = [self labelWithString:@"Native macOS app for running Playwright screenshot jobs without a browser or Terminal window."
+                                                  font:[NSFont systemFontOfSize:13]
+                                                 color:[self bodyTextColor]
+                                                 frame:NSMakeRect(left, 666, width - 48, 18)];
+
+    NSTextField *urlPrompt = [self labelWithString:@"Website or sitemap"
+                                              font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                             color:[self bodyTextColor]
+                                             frame:NSMakeRect(left, 624, 240, 18)];
+    self.urlField = [self inputFieldWithFrame:NSMakeRect(left, 592, width - 48, 28)
+                                   placeholder:@"https://example.com or example.com/sitemap.xml"];
+
+    NSTextField *variantPrompt = [self labelWithString:@"Variant"
+                                                  font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                 color:[self bodyTextColor]
+                                                 frame:NSMakeRect(left, 552, 120, 18)];
+    self.variantPopup = [self popupWithItems:@[@"basic", @"extended"] frame:NSMakeRect(left, 520, 180, 28)];
+
+    NSTextField *timeoutPrompt = [self labelWithString:@"Timeout profile"
+                                                  font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                 color:[self bodyTextColor]
+                                                 frame:NSMakeRect(232, 552, 140, 18)];
+    self.timeoutPopup = [self popupWithItems:@[@"normal", @"slow"] frame:NSMakeRect(232, 520, 180, 28)];
+
+    NSTextField *maxPrompt = [self labelWithString:@"Max URLs"
+                                              font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                             color:[self bodyTextColor]
+                                             frame:NSMakeRect(440, 552, 120, 18)];
+    self.maxUrlsField = [self inputFieldWithFrame:NSMakeRect(440, 520, 110, 28) placeholder:@"Optional"];
+
+    NSTextField *includePrompt = [self labelWithString:@"Include filters"
+                                                  font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                 color:[self bodyTextColor]
+                                                 frame:NSMakeRect(left, 480, 140, 18)];
+    self.includeField = [self inputFieldWithFrame:NSMakeRect(left, 448, 388, 28)
+                                       placeholder:@"/blog/,/news/"];
+
+    NSTextField *excludePrompt = [self labelWithString:@"Exclude filters"
+                                                  font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                 color:[self bodyTextColor]
+                                                 frame:NSMakeRect(424, 480, 140, 18)];
+    self.excludeField = [self inputFieldWithFrame:NSMakeRect(424, 448, 412, 28)
+                                       placeholder:@"/tag/,/author/"];
+
+    self.onlyFailedButton = [self checkboxWithTitle:@"Only failed" frame:NSMakeRect(left, 410, 120, 18)];
+    self.generateIndexButton = [self checkboxWithTitle:@"Generate HTML index" frame:NSMakeRect(152, 410, 170, 18)];
+    self.blockMediaButton = [self checkboxWithTitle:@"Block third-party media" frame:NSMakeRect(334, 410, 190, 18)];
+    self.generateIndexButton.state = NSControlStateValueOn;
+
+    self.startButton = [self buttonWithTitle:@"Start Run" action:@selector(startRun:) frame:NSMakeRect(left, 366, 118, 32)];
+    self.stopButton = [self buttonWithTitle:@"Stop Run" action:@selector(stopRun:) frame:NSMakeRect(154, 366, 118, 32)];
+    self.openOutputButton = [self buttonWithTitle:@"Open Last Output" action:@selector(openLastOutput:) frame:NSMakeRect(284, 366, 140, 32)];
+    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:) frame:NSMakeRect(436, 366, 170, 32)];
+    self.quitButton = [self buttonWithTitle:@"Quit App" action:@selector(quitApp:) frame:NSMakeRect(width - 24 - 118, 24, 118, 32)];
+
+    self.statusLabel = [self labelWithString:@"Ready"
+                                        font:[NSFont boldSystemFontOfSize:18]
+                                       color:[NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0]
+                                       frame:NSMakeRect(left, 322, 240, 22)];
+    self.detailLabel = [self labelWithString:@"Fill in a website or sitemap above to start a native screenshot run."
+                                        font:[NSFont systemFontOfSize:13]
+                                       color:[self bodyTextColor]
+                                       frame:NSMakeRect(left, 300, width - 48, 18)];
+    self.progressLabel = [self labelWithString:@"No active run."
+                                          font:[NSFont systemFontOfSize:13]
+                                         color:[self bodyTextColor]
+                                         frame:NSMakeRect(left, 276, width - 48, 18)];
+    self.outputLabel = [self labelWithString:@"Last output: not available yet."
+                                        font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
+                                       color:[self mutedTextColor]
+                                       frame:NSMakeRect(left, 254, width - 48, 18)];
+    self.outputLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+
+    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(left, 72, width - 48, 168)];
+    logScrollView.hasVerticalScroller = YES;
+    logScrollView.borderType = NSNoBorder;
+    logScrollView.drawsBackground = NO;
+
+    self.logView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, logScrollView.frame.size.width, logScrollView.frame.size.height)];
+    self.logView.editable = NO;
+    self.logView.selectable = YES;
+    self.logView.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+    self.logView.backgroundColor = [NSColor colorWithCalibratedRed:0.11 green:0.13 blue:0.12 alpha:1.0];
+    self.logView.textColor = [NSColor colorWithCalibratedRed:0.90 green:0.94 blue:0.92 alpha:1.0];
+    self.logView.textContainerInset = NSMakeSize(12, 12);
+    logScrollView.documentView = self.logView;
+
+    NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] ?: @"0.0.0";
+    self.versionLabel = [self labelWithString:[NSString stringWithFormat:@"Version %@", version]
+                                         font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
+                                        color:[self bodyTextColor]
+                                        frame:NSMakeRect(left, 30, 160, 16)];
+
+    for (NSView *view in @[
+        titleLabel, subtitleLabel, urlPrompt, self.urlField, variantPrompt, self.variantPopup,
+        timeoutPrompt, self.timeoutPopup, maxPrompt, self.maxUrlsField, includePrompt,
+        self.includeField, excludePrompt, self.excludeField, self.onlyFailedButton,
+        self.generateIndexButton, self.blockMediaButton, self.startButton, self.stopButton,
+        self.openOutputButton, self.revealButton, self.statusLabel, self.detailLabel,
+        self.progressLabel, self.outputLabel, logScrollView, self.versionLabel, self.quitButton
+    ]) {
+        [content addSubview:view];
+    }
+
+    [self updateButtons];
+    [self appendLog:@"Native launcher ready.\n"];
 }
 
-- (BOOL)canOpenGUI {
-    return self.serverURL != nil;
+- (NSString *)trimmedValue:(NSString *)value {
+    return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
-- (BOOL)canStopServer {
-    return self.serverTask != nil && self.serverTask.isRunning;
+- (BOOL)canStartRun {
+    return !(self.runTask != nil && self.runTask.isRunning);
+}
+
+- (BOOL)canStopRun {
+    return self.runTask != nil && self.runTask.isRunning;
+}
+
+- (BOOL)canOpenOutput {
+    return self.lastOutputURL != nil;
 }
 
 - (NSURL *)projectRootURL {
@@ -310,9 +420,9 @@
 
     while (candidate != nil) {
         NSURL *pythonURL = [candidate URLByAppendingPathComponent:@".venv/bin/python"];
-        NSURL *guiURL = [candidate URLByAppendingPathComponent:@"gui.py"];
+        NSURL *scriptURL = [candidate URLByAppendingPathComponent:@"screenshot.py"];
         if ([fileManager isExecutableFileAtPath:pythonURL.path] &&
-            [fileManager fileExistsAtPath:guiURL.path]) {
+            [fileManager fileExistsAtPath:scriptURL.path]) {
             return candidate;
         }
 
@@ -330,48 +440,131 @@
     return [[self projectRootURL] URLByAppendingPathComponent:@".venv/bin/python"];
 }
 
-- (NSURL *)guiScriptURL {
-    return [[self projectRootURL] URLByAppendingPathComponent:@"gui.py"];
+- (NSURL *)screenshotScriptURL {
+    return [[self projectRootURL] URLByAppendingPathComponent:@"screenshot.py"];
 }
 
-- (void)startServer:(id)sender {
+- (NSArray<NSString *> *)currentCommandArgumentsWithError:(NSString **)errorMessage {
+    NSString *url = [self trimmedValue:self.urlField.stringValue ?: @""];
+    if (url.length == 0) {
+        if (errorMessage != NULL) {
+            *errorMessage = @"Enter a website or sitemap first.";
+        }
+        return nil;
+    }
+
+    NSString *maxURLs = [self trimmedValue:self.maxUrlsField.stringValue ?: @""];
+    if (maxURLs.length > 0) {
+        NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+        if ([maxURLs rangeOfCharacterFromSet:nonDigits].location != NSNotFound || maxURLs.integerValue < 1) {
+            if (errorMessage != NULL) {
+                *errorMessage = @"Max URLs must be a positive whole number.";
+            }
+            return nil;
+        }
+    }
+
+    NSURL *scriptURL = [self screenshotScriptURL];
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithArray:@[
+        @"-u",
+        scriptURL.path,
+        @"--url",
+        url,
+        @"--variant",
+        self.variantPopup.selectedItem.title.lowercaseString ?: @"basic",
+        @"--timeout-profile",
+        self.timeoutPopup.selectedItem.title.lowercaseString ?: @"normal",
+        @"--no-open",
+        @"--event-stream",
+        @"jsonl",
+    ]];
+
+    if (self.onlyFailedButton.state == NSControlStateValueOn) {
+        [arguments addObject:@"--only-failed"];
+    }
+    if (self.generateIndexButton.state == NSControlStateValueOn) {
+        [arguments addObject:@"--generate-index"];
+    }
+    if (self.blockMediaButton.state == NSControlStateValueOn) {
+        [arguments addObject:@"--block-third-party-media"];
+    }
+
+    NSString *includeFilters = [self trimmedValue:self.includeField.stringValue ?: @""];
+    if (includeFilters.length > 0) {
+        [arguments addObject:@"--include"];
+        [arguments addObject:includeFilters];
+    }
+    NSString *excludeFilters = [self trimmedValue:self.excludeField.stringValue ?: @""];
+    if (excludeFilters.length > 0) {
+        [arguments addObject:@"--exclude"];
+        [arguments addObject:excludeFilters];
+    }
+    if (maxURLs.length > 0) {
+        [arguments addObject:@"--max-urls"];
+        [arguments addObject:maxURLs];
+    }
+
+    return arguments;
+}
+
+- (void)setInputsEnabled:(BOOL)enabled {
+    self.urlField.editable = enabled;
+    self.includeField.editable = enabled;
+    self.excludeField.editable = enabled;
+    self.maxUrlsField.editable = enabled;
+    self.variantPopup.enabled = enabled;
+    self.timeoutPopup.enabled = enabled;
+    self.onlyFailedButton.enabled = enabled;
+    self.generateIndexButton.enabled = enabled;
+    self.blockMediaButton.enabled = enabled;
+}
+
+- (void)startRun:(id)sender {
     (void)sender;
-    if (![self canStartServer]) {
-        [self openGUI:nil];
+    if (![self canStartRun]) {
         return;
     }
 
     NSURL *pythonURL = [self pythonURL];
-    NSURL *guiURL = [self guiScriptURL];
+    NSURL *scriptURL = [self screenshotScriptURL];
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:pythonURL.path]) {
         [self setStatus:@"Missing Python"
                  detail:[NSString stringWithFormat:@"Expected virtual environment Python at %@", pythonURL.path]];
         [self appendLog:[NSString stringWithFormat:@"Missing Python executable: %@\n", pythonURL.path]];
         return;
     }
-    if (![[NSFileManager defaultManager] fileExistsAtPath:guiURL.path]) {
-        [self setStatus:@"Missing gui.py"
-                 detail:[NSString stringWithFormat:@"Expected gui.py at %@", guiURL.path]];
-        [self appendLog:[NSString stringWithFormat:@"Missing gui.py: %@\n", guiURL.path]];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:scriptURL.path]) {
+        [self setStatus:@"Missing screenshot.py"
+                 detail:[NSString stringWithFormat:@"Expected screenshot.py at %@", scriptURL.path]];
+        [self appendLog:[NSString stringWithFormat:@"Missing screenshot.py: %@\n", scriptURL.path]];
         return;
     }
 
-    self.serverURL = nil;
-    self.browserOpenedAutomatically = NO;
-    [self.lineBuffer setString:@""];
-    [self setStatus:@"Starting"
-             detail:@"Launching the local GUI server..."];
-    self.urlLabel.stringValue = @"Browser URL: waiting for local server...";
-    [self appendLog:[NSString stringWithFormat:@"Starting %@ -u %@ --no-browser-open\n", pythonURL.path, guiURL.path]];
+    NSString *errorMessage = nil;
+    NSArray<NSString *> *arguments = [self currentCommandArgumentsWithError:&errorMessage];
+    if (arguments == nil) {
+        [self setStatus:@"Input error" detail:errorMessage ?: @"Check the run options and try again."];
+        return;
+    }
 
-    self.serverTask = [[NSTask alloc] init];
-    self.serverTask.currentDirectoryURL = [self projectRootURL];
-    self.serverTask.executableURL = pythonURL;
-    self.serverTask.arguments = @[@"-u", guiURL.path, @"--no-browser-open"];
-    self.serverTask.standardInput = [NSFileHandle fileHandleForReadingAtPath:@"/dev/null"];
+    self.lastOutputURL = nil;
+    self.stopRequested = NO;
+    [self.lineBuffer setString:@""];
+    self.logView.string = @"";
+    [self setStatus:@"Starting"
+             detail:@"Launching the native screenshot run..."];
+    self.progressLabel.stringValue = @"Waiting for the screenshot engine to start...";
+    self.outputLabel.stringValue = @"Last output: not available yet.";
+    [self appendLog:[NSString stringWithFormat:@"Starting %@ %@\n", pythonURL.path, [arguments componentsJoinedByString:@" "]]];
+
+    self.runTask = [[NSTask alloc] init];
+    self.runTask.currentDirectoryURL = [self projectRootURL];
+    self.runTask.executableURL = pythonURL;
+    self.runTask.arguments = arguments;
+    self.runTask.standardInput = [NSFileHandle fileHandleForReadingAtPath:@"/dev/null"];
     self.outputPipe = [NSPipe pipe];
-    self.serverTask.standardOutput = self.outputPipe;
-    self.serverTask.standardError = self.outputPipe;
+    self.runTask.standardOutput = self.outputPipe;
+    self.runTask.standardError = self.outputPipe;
 
     __weak typeof(self) weakSelf = self;
     self.outputPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle *handle) {
@@ -389,30 +582,30 @@
         });
     };
 
-    self.serverTask.terminationHandler = ^(NSTask *task) {
+    self.runTask.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf serverTaskDidTerminate:task];
+            [weakSelf runTaskDidTerminate:task];
         });
     };
 
-    NSError *error = nil;
-    if (![self.serverTask launchAndReturnError:&error]) {
+    NSError *launchError = nil;
+    if (![self.runTask launchAndReturnError:&launchError]) {
         [self setStatus:@"Failed to start"
-                 detail:error.localizedDescription ?: @"Could not launch the local GUI server."];
-        [self appendLog:[NSString stringWithFormat:@"Launch failed: %@\n", error.localizedDescription ?: @"Unknown error"]];
-        self.serverTask = nil;
+                 detail:launchError.localizedDescription ?: @"Could not launch the screenshot engine."];
+        [self appendLog:[NSString stringWithFormat:@"Launch failed: %@\n", launchError.localizedDescription ?: @"Unknown error"]];
+        self.runTask = nil;
         self.outputPipe = nil;
         [self updateButtons];
+        [self setInputsEnabled:YES];
         return;
     }
 
+    [self setInputsEnabled:NO];
     [self updateButtons];
 }
 
 - (void)consumeOutput:(NSString *)text {
-    [self appendLog:text];
     [self.lineBuffer appendString:text];
-
     while (YES) {
         NSRange newlineRange = [self.lineBuffer rangeOfString:@"\n"];
         if (newlineRange.location == NSNotFound) {
@@ -420,63 +613,193 @@
         }
         NSString *line = [self.lineBuffer substringToIndex:newlineRange.location];
         [self.lineBuffer deleteCharactersInRange:NSMakeRange(0, newlineRange.location + newlineRange.length)];
-        [self handleLogLine:line];
+        [self handleOutputLine:line];
     }
 }
 
-- (void)handleLogLine:(NSString *)line {
-    NSString *prefix = @"Opening local GUI at ";
-    if (![line hasPrefix:prefix]) {
+- (void)handleOutputLine:(NSString *)line {
+    if (self.stopRequested) {
+        NSArray<NSString *> *suppressedFragments = @[
+            @"Future exception was never retrieved",
+            @"TargetClosedError",
+            @"Target page, context or browser has been closed",
+            @"playwright._impl._errors.TargetClosedError",
+        ];
+        for (NSString *fragment in suppressedFragments) {
+            if ([line containsString:fragment]) {
+                return;
+            }
+        }
+    }
+    if ([line hasPrefix:kEventPrefix]) {
+        NSString *jsonString = [line substringFromIndex:kEventPrefix.length];
+        NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
+        if (jsonData != nil) {
+            NSError *error = nil;
+            NSDictionary *event = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&error];
+            if ([event isKindOfClass:[NSDictionary class]] && error == nil) {
+                [self handleEvent:event];
+                return;
+            }
+        }
+    }
+    [self appendLog:[line stringByAppendingString:@"\n"]];
+}
+
+- (void)handleEvent:(NSDictionary *)event {
+    NSString *name = event[@"event"];
+    if (![name isKindOfClass:[NSString class]]) {
         return;
     }
 
-    NSString *urlString = [[line substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (url == nil) {
+    if ([name isEqualToString:@"run_started"]) {
+        [self setStatus:@"Running" detail:@"The screenshot engine is active."];
         return;
     }
 
-    self.serverURL = url;
-    [self setStatus:@"Running"
-             detail:@"The local GUI server is active. Your browser should open automatically."];
-    self.urlLabel.stringValue = [NSString stringWithFormat:@"Browser URL: %@", url.absoluteString];
-    [self updateButtons];
+    if ([name isEqualToString:@"site_started"]) {
+        NSString *domain = event[@"domain"] ?: @"site";
+        NSString *runFolder = event[@"run_folder"] ?: @"";
+        self.progressLabel.stringValue = [NSString stringWithFormat:@"Preparing %@", domain];
+        if ([runFolder isKindOfClass:[NSString class]] && runFolder.length > 0) {
+            self.outputLabel.stringValue = [NSString stringWithFormat:@"Run folder: %@", runFolder];
+        }
+        return;
+    }
 
-    if (!self.browserOpenedAutomatically) {
-        self.browserOpenedAutomatically = YES;
-        [self openGUI:nil];
+    if ([name isEqualToString:@"site_urls_loaded"]) {
+        NSNumber *totalURLs = event[@"total_urls"];
+        NSString *source = event[@"source"] ?: @"sitemap";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Loaded %@ URLs from %@.", totalURLs ?: @0, source];
+        return;
+    }
+
+    if ([name isEqualToString:@"site_urls_filtered"]) {
+        NSNumber *totalURLs = event[@"total_urls"];
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Ready to capture %@ pages.", totalURLs ?: @0];
+        return;
+    }
+
+    if ([name isEqualToString:@"large_run_warning"]) {
+        NSNumber *totalURLs = event[@"total_urls"];
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Large run detected (%@ URLs). Continuing in app mode.", totalURLs ?: @0];
+        return;
+    }
+
+    if ([name isEqualToString:@"page_started"]) {
+        NSNumber *pageIndex = event[@"page_index"];
+        NSNumber *totalPages = event[@"total_pages"];
+        NSString *url = event[@"url"] ?: @"";
+        self.progressLabel.stringValue = [NSString stringWithFormat:@"Page %@ of %@: %@", pageIndex ?: @0, totalPages ?: @0, url];
+        return;
+    }
+
+    if ([name isEqualToString:@"viewport_started"]) {
+        NSNumber *viewportIndex = event[@"viewport_index"];
+        NSNumber *totalViewports = event[@"total_viewports"];
+        NSString *viewport = event[@"viewport"] ?: @"viewport";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Capturing %@ (%@/%@).", viewport, viewportIndex ?: @0, totalViewports ?: @0];
+        return;
+    }
+
+    if ([name isEqualToString:@"viewport_saved"]) {
+        NSString *path = event[@"screenshot_path"] ?: @"";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Saved %@", path];
+        return;
+    }
+
+    if ([name isEqualToString:@"page_finished"]) {
+        NSNumber *successful = event[@"successful_viewports"];
+        NSNumber *failed = event[@"failed_viewports"];
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Page done. Successful viewports: %@, failed: %@.", successful ?: @0, failed ?: @0];
+        return;
+    }
+
+    if ([name isEqualToString:@"site_finished"]) {
+        NSString *runFolder = event[@"run_folder"] ?: @"";
+        NSString *indexHTML = event[@"index_html"] ?: @"";
+        NSNumber *pagesProcessed = event[@"pages_processed"];
+        self.statusLabel.stringValue = @"Finished";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Finished %@ pages for %@.", pagesProcessed ?: @0, event[@"domain"] ?: @"site"];
+        self.progressLabel.stringValue = @"Run completed successfully.";
+        if ([indexHTML isKindOfClass:[NSString class]] && indexHTML.length > 0) {
+            self.lastOutputURL = [NSURL fileURLWithPath:indexHTML];
+            self.outputLabel.stringValue = [NSString stringWithFormat:@"Last output: %@", indexHTML];
+        } else if ([runFolder isKindOfClass:[NSString class]] && runFolder.length > 0) {
+            self.lastOutputURL = [NSURL fileURLWithPath:runFolder];
+            self.outputLabel.stringValue = [NSString stringWithFormat:@"Last output: %@", runFolder];
+        }
+        [self updateButtons];
+        return;
+    }
+
+    if ([name isEqualToString:@"site_failed"]) {
+        self.statusLabel.stringValue = @"Failed";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"Could not complete %@.", event[@"domain"] ?: @"site"];
+        return;
+    }
+
+    if ([name isEqualToString:@"site_skipped"]) {
+        self.statusLabel.stringValue = @"Stopped";
+        self.detailLabel.stringValue = @"Run was stopped before screenshots started.";
+        self.progressLabel.stringValue = @"No screenshots were captured.";
+        return;
+    }
+
+    if ([name isEqualToString:@"run_aborted"]) {
+        self.statusLabel.stringValue = self.stopRequested ? @"Stopped" : @"Aborted";
+        self.detailLabel.stringValue = self.stopRequested ? @"Run stopped by user." : @"Run aborted.";
+        return;
+    }
+
+    if ([name isEqualToString:@"run_finished"] && !self.stopRequested) {
+        if ([self.statusLabel.stringValue isEqualToString:@"Running"] ||
+            [self.statusLabel.stringValue isEqualToString:@"Starting"]) {
+            self.statusLabel.stringValue = @"Finished";
+            self.detailLabel.stringValue = @"Screenshot run finished.";
+            self.progressLabel.stringValue = @"All work complete.";
+        }
     }
 }
 
-- (void)serverTaskDidTerminate:(NSTask *)task {
+- (void)runTaskDidTerminate:(NSTask *)task {
     (void)task;
     self.outputPipe.fileHandleForReading.readabilityHandler = nil;
-    int status = self.serverTask.terminationStatus;
-    self.serverTask = nil;
+
+    if (self.lineBuffer.length > 0) {
+        NSString *remaining = [self.lineBuffer copy];
+        [self.lineBuffer setString:@""];
+        [self handleOutputLine:remaining];
+    }
+
+    int status = self.runTask.terminationStatus;
+    self.runTask = nil;
     self.outputPipe = nil;
-    self.browserOpenedAutomatically = NO;
+    [self setInputsEnabled:YES];
 
     if (self.quitAfterShutdown) {
         [NSApp replyToApplicationShouldTerminate:YES];
         return;
     }
 
-    if (status == 0 || status == SIGTERM || status == SIGINT) {
-        [self setStatus:@"Stopped"
-                 detail:@"The local GUI server is not running."];
-    } else {
-        [self setStatus:@"Stopped"
-                 detail:[NSString stringWithFormat:@"The local GUI server ended with status %d.", status]];
+    if (self.stopRequested) {
+        [self setStatus:@"Stopped" detail:@"Run stopped by user."];
+        self.progressLabel.stringValue = @"You can start a new run whenever you are ready.";
+    } else if (status != 0 && ![self.statusLabel.stringValue isEqualToString:@"Failed"]) {
+        [self setStatus:@"Failed"
+                 detail:[NSString stringWithFormat:@"The screenshot engine ended with status %d.", status]];
     }
+
+    self.stopRequested = NO;
     [self updateButtons];
 }
 
-- (void)openGUI:(id)sender {
+- (void)openLastOutput:(id)sender {
     (void)sender;
-    if (![self canOpenGUI]) {
+    if (![self canOpenOutput]) {
         return;
     }
-    [[NSWorkspace sharedWorkspace] openURL:self.serverURL];
+    [[NSWorkspace sharedWorkspace] openURL:self.lastOutputURL];
 }
 
 - (void)revealProjectFolder:(id)sender {
@@ -489,60 +812,29 @@
     [NSApp terminate:nil];
 }
 
-- (void)stopServer:(id)sender {
+- (void)stopRun:(id)sender {
     (void)sender;
-    if (![self canStopServer]) {
+    if (![self canStopRun]) {
         return;
     }
-    [self shutdownServerAndRunIfNeeded];
-}
-
-- (void)shutdownServerAndRunIfNeeded {
-    if (self.serverTask == nil || !self.serverTask.isRunning) {
-        [self setStatus:@"Stopped"
-                 detail:@"The local GUI server is not running."];
-        [self updateButtons];
-        if (self.quitAfterShutdown) {
-            [NSApp replyToApplicationShouldTerminate:YES];
-        }
-        return;
-    }
-
-    [self setStatus:@"Stopping"
-             detail:@"Stopping the local GUI server and any active run..."];
-    [self appendLog:@"Stopping local GUI server...\n"];
-
-    NSURL *stopURL = nil;
-    if (self.serverURL != nil) {
-        stopURL = [self.serverURL URLByAppendingPathComponent:@"api/stop"];
-    }
-    if (stopURL != nil) {
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:stopURL];
-        request.HTTPMethod = @"POST";
-        request.timeoutInterval = 2.0;
-        request.HTTPBody = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
-        [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-        [[[NSURLSession sharedSession] dataTaskWithRequest:request] resume];
-    }
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (self.serverTask == nil || !self.serverTask.isRunning) {
-            return;
-        }
-        [self.serverTask interrupt];
-        [self scheduleForceStop];
-    });
+    self.stopRequested = YES;
+    [self setStatus:@"Stopping" detail:@"Stopping the active screenshot run..."];
+    self.progressLabel.stringValue = @"Waiting for the engine to shut down cleanly...";
+    [self appendLog:@"Stopping screenshot run...\n"];
+    [self.runTask interrupt];
+    [self scheduleForceStop];
+    [self updateButtons];
 }
 
 - (void)scheduleForceStop {
-    pid_t pid = self.serverTask.processIdentifier;
+    pid_t pid = self.runTask.processIdentifier;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (self.serverTask == nil || !self.serverTask.isRunning) {
+        if (self.runTask == nil || !self.runTask.isRunning) {
             return;
         }
         kill(pid, SIGTERM);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self.serverTask == nil || !self.serverTask.isRunning) {
+            if (self.runTask == nil || !self.runTask.isRunning) {
                 return;
             }
             kill(pid, SIGKILL);
@@ -556,17 +848,19 @@
 }
 
 - (void)updateButtons {
-    BOOL canStart = [self canStartServer];
-    BOOL canOpen = [self canOpenGUI];
-    BOOL canStop = [self canStopServer];
-    self.startButton.title = canStart ? @"Start GUI" : @"GUI Running";
-    self.openButton.title = @"Open GUI";
-    self.stopButton.title = @"Stop GUI";
+    BOOL canStart = [self canStartRun];
+    BOOL canStop = [self canStopRun];
+    BOOL canOpenOutput = [self canOpenOutput];
+
+    self.startButton.title = canStart ? @"Start Run" : @"Running";
+    self.stopButton.title = @"Stop Run";
+    self.openOutputButton.title = @"Open Last Output";
     self.revealButton.title = @"Open Project Folder";
     self.quitButton.title = @"Quit App";
+
     [self applyStyleToButton:self.startButton role:@"primary" enabled:canStart];
-    [self applyStyleToButton:self.openButton role:@"secondary" enabled:canOpen];
     [self applyStyleToButton:self.stopButton role:@"danger" enabled:canStop];
+    [self applyStyleToButton:self.openOutputButton role:@"secondary" enabled:canOpenOutput];
     [self applyStyleToButton:self.revealButton role:@"secondary" enabled:YES];
     [self applyStyleToButton:self.quitButton role:@"secondary" enabled:YES];
 }
@@ -582,8 +876,8 @@
     [[self.logView textStorage] appendAttributedString:chunk];
 
     NSString *fullText = self.logView.string ?: @"";
-    if (fullText.length > 12000) {
-        NSString *trimmed = [fullText substringFromIndex:fullText.length - 12000];
+    if (fullText.length > 16000) {
+        NSString *trimmed = [fullText substringFromIndex:fullText.length - 16000];
         [self.logView.textStorage setAttributedString:[[NSAttributedString alloc] initWithString:trimmed attributes:@{
             NSForegroundColorAttributeName: self.logView.textColor ?: NSColor.textColor,
             NSFontAttributeName: self.logView.font ?: [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular],
