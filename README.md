@@ -78,6 +78,7 @@ The first GUI version includes:
 - `basic` or `extended` variants
 - `normal` or `slow` timeout profile
 - `only failed`, include, exclude and max URL options
+- an optional GUI toggle to block third-party media such as YouTube embeds during capture
 - a `Pause run` / `Resume run` control for long runs
 - a live log view in the browser during the run
 - live progress feedback for current page and viewport
@@ -110,9 +111,12 @@ Keep that `.app` inside the project folder so it can still find `.venv` and `gui
 What this app does:
 
 - starts `gui.py` in the background using the project `.venv`
+- builds and uses its own custom macOS app icon
 - opens the browser to the local GUI automatically
 - lets you reopen the browser GUI if you close the tab
 - lets you stop the local GUI server from the native app window
+- shows the current app version in the native wrapper window
+- includes a `Quit App` button in the native wrapper window
 - keeps using the same existing `screenshot.py` and output structure
 
 This is intentionally a wrapper around the current Python/web GUI, not a full native rewrite yet.
@@ -229,6 +233,14 @@ The capture flow is now a bit more defensive on difficult sites too:
 - it can run one extra stabilization pass when a page still looks suspiciously blank or blocked
 - it records redirect and suspicious-result flags in the reports for easier follow-up
 
+If you explicitly want to suppress third-party media requests such as YouTube embeds during capture, use:
+
+```bash
+python screenshot.py --url example.com --variant basic --block-third-party-media
+```
+
+This can reduce browser connection prompts, but it can also change the visible layout of pages that rely on embedded video.
+
 ## Output structure
 
 Screenshots are grouped per domain first, so runs from different websites do not get mixed together.
@@ -274,6 +286,8 @@ screenshots/
 - `extra_stabilization_pass`: whether the script used an extra recovery pass before taking the screenshot
 
 These flags do not automatically fail a page, but they help spot pages that deserve a manual check.
+
+When `--block-third-party-media` is used and third-party media requests such as YouTube embeds are blocked during capture, the report can include `third_party_media_blocked`.
 
 ## Versioning
 

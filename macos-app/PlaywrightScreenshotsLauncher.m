@@ -6,11 +6,13 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *detailLabel;
 @property(nonatomic, strong) NSTextField *urlLabel;
+@property(nonatomic, strong) NSTextField *versionLabel;
 @property(nonatomic, strong) NSTextView *logView;
 @property(nonatomic, strong) NSButton *startButton;
 @property(nonatomic, strong) NSButton *openButton;
 @property(nonatomic, strong) NSButton *stopButton;
 @property(nonatomic, strong) NSButton *revealButton;
+@property(nonatomic, strong) NSButton *quitButton;
 @property(nonatomic, strong) NSTask *serverTask;
 @property(nonatomic, strong) NSPipe *outputPipe;
 @property(nonatomic, strong) NSMutableString *lineBuffer;
@@ -120,11 +122,16 @@
                                      font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]
                                     color:[NSColor colorWithCalibratedRed:0.24 green:0.31 blue:0.29 alpha:1.0]];
     self.urlLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] ?: @"0.0.0";
+    self.versionLabel = [self labelWithString:[NSString stringWithFormat:@"Version %@", version]
+                                         font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
+                                        color:[self bodyTextColor]];
 
     self.startButton = [self buttonWithTitle:@"Start GUI" action:@selector(startServer:)];
     self.openButton = [self buttonWithTitle:@"Open GUI" action:@selector(openGUI:)];
     self.stopButton = [self buttonWithTitle:@"Stop GUI" action:@selector(stopServer:)];
     self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:)];
+    self.quitButton = [self buttonWithTitle:@"Quit App" action:@selector(quitApp:)];
 
     NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     logScrollView.hasVerticalScroller = YES;
@@ -144,7 +151,10 @@
     NSView *buttonRow = [[NSView alloc] initWithFrame:NSZeroRect];
     buttonRow.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (NSView *view in @[titleLabel, subtitleLabel, self.statusLabel, self.detailLabel, self.urlLabel, buttonRow, logScrollView]) {
+    NSView *footerRow = [[NSView alloc] initWithFrame:NSZeroRect];
+    footerRow.translatesAutoresizingMaskIntoConstraints = NO;
+
+    for (NSView *view in @[titleLabel, subtitleLabel, self.statusLabel, self.detailLabel, self.urlLabel, buttonRow, logScrollView, footerRow]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:view];
     }
@@ -153,7 +163,12 @@
     for (NSButton *button in buttons) {
         button.translatesAutoresizingMaskIntoConstraints = NO;
         [buttonRow addSubview:button];
+        [[button.heightAnchor constraintEqualToConstant:32.0] setActive:YES];
     }
+    self.quitButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [footerRow addSubview:self.quitButton];
+    self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [footerRow addSubview:self.versionLabel];
 
     NSDictionary<NSString *, NSView *> *views = @{
         @"title": titleLabel,
@@ -163,6 +178,7 @@
         @"url": self.urlLabel,
         @"buttons": buttonRow,
         @"log": logScrollView,
+        @"footer": footerRow,
     };
 
     [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[title]-24-|"
@@ -193,7 +209,11 @@
                                                                                      options:0
                                                                                      metrics:nil
                                                                                        views:views]];
-    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-24-[title]-4-[subtitle]-18-[status]-4-[detail]-10-[url]-18-[buttons(32)]-18-[log]-24-|"
+    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-24-[title]-4-[subtitle]-18-[status]-4-[detail]-10-[url]-18-[buttons(32)]-18-[log]-14-[footer(32)]-20-|"
+                                                                                     options:0
+                                                                                     metrics:nil
+                                                                                       views:views]];
+    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-24-[footer]-24-|"
                                                                                      options:0
                                                                                      metrics:nil
                                                                                        views:views]];
@@ -212,6 +232,21 @@
                                                                                      options:0
                                                                                      metrics:nil
                                                                                        views:buttonViews]];
+
+    NSDictionary<NSString *, NSView *> *footerViews = @{
+        @"version": self.versionLabel,
+        @"quit": self.quitButton,
+    };
+    [self.quitButton.widthAnchor constraintEqualToConstant:118.0].active = YES;
+    [self.quitButton.heightAnchor constraintEqualToConstant:32.0].active = YES;
+    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[version]-12-[quit(118)]|"
+                                                                                     options:NSLayoutFormatAlignAllCenterY
+                                                                                     metrics:nil
+                                                                                       views:footerViews]];
+    [NSLayoutConstraint activateConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[quit]|"
+                                                                                     options:0
+                                                                                     metrics:nil
+                                                                                       views:footerViews]];
 
     [self updateButtons];
     [self appendLog:@"Launcher ready.\n"];
@@ -241,7 +276,9 @@
 }
 
 - (void)applyStyleToButton:(NSButton *)button role:(NSString *)role enabled:(BOOL)enabled {
-    button.enabled = enabled;
+    // Keep the button technically enabled so AppKit does not replace our custom
+    // colors with its own hard-to-read disabled styling.
+    button.enabled = YES;
     button.alphaValue = 1.0;
     button.layer.backgroundColor = [self buttonBackgroundColorForRole:role enabled:enabled].CGColor;
     button.layer.borderColor = [self buttonBorderColorForRole:role enabled:enabled].CGColor;
@@ -253,6 +290,18 @@
     NSAttributedString *styledTitle = [[NSAttributedString alloc] initWithString:button.title attributes:attributes];
     button.attributedTitle = styledTitle;
     button.attributedAlternateTitle = styledTitle;
+}
+
+- (BOOL)canStartServer {
+    return !(self.serverTask != nil && self.serverTask.isRunning);
+}
+
+- (BOOL)canOpenGUI {
+    return self.serverURL != nil;
+}
+
+- (BOOL)canStopServer {
+    return self.serverTask != nil && self.serverTask.isRunning;
 }
 
 - (NSURL *)projectRootURL {
@@ -287,7 +336,7 @@
 
 - (void)startServer:(id)sender {
     (void)sender;
-    if (self.serverTask != nil && self.serverTask.isRunning) {
+    if (![self canStartServer]) {
         [self openGUI:nil];
         return;
     }
@@ -424,7 +473,7 @@
 
 - (void)openGUI:(id)sender {
     (void)sender;
-    if (self.serverURL == nil) {
+    if (![self canOpenGUI]) {
         return;
     }
     [[NSWorkspace sharedWorkspace] openURL:self.serverURL];
@@ -435,8 +484,16 @@
     [[NSWorkspace sharedWorkspace] openURL:[self projectRootURL]];
 }
 
+- (void)quitApp:(id)sender {
+    (void)sender;
+    [NSApp terminate:nil];
+}
+
 - (void)stopServer:(id)sender {
     (void)sender;
+    if (![self canStopServer]) {
+        return;
+    }
     [self shutdownServerAndRunIfNeeded];
 }
 
@@ -499,15 +556,19 @@
 }
 
 - (void)updateButtons {
-    BOOL running = (self.serverTask != nil && self.serverTask.isRunning);
-    self.startButton.title = running ? @"GUI Running" : @"Start GUI";
+    BOOL canStart = [self canStartServer];
+    BOOL canOpen = [self canOpenGUI];
+    BOOL canStop = [self canStopServer];
+    self.startButton.title = canStart ? @"Start GUI" : @"GUI Running";
     self.openButton.title = @"Open GUI";
     self.stopButton.title = @"Stop GUI";
     self.revealButton.title = @"Open Project Folder";
-    [self applyStyleToButton:self.startButton role:@"primary" enabled:!running];
-    [self applyStyleToButton:self.openButton role:@"secondary" enabled:(self.serverURL != nil)];
-    [self applyStyleToButton:self.stopButton role:@"danger" enabled:running];
+    self.quitButton.title = @"Quit App";
+    [self applyStyleToButton:self.startButton role:@"primary" enabled:canStart];
+    [self applyStyleToButton:self.openButton role:@"secondary" enabled:canOpen];
+    [self applyStyleToButton:self.stopButton role:@"danger" enabled:canStop];
     [self applyStyleToButton:self.revealButton role:@"secondary" enabled:YES];
+    [self applyStyleToButton:self.quitButton role:@"secondary" enabled:YES];
 }
 
 - (void)appendLog:(NSString *)text {

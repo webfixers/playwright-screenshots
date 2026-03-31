@@ -349,7 +349,9 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="check-row">
             <label class="check-pill"><input type="checkbox" id="only_failed" name="only_failed"> Only failed</label>
             <label class="check-pill"><input type="checkbox" id="generate_index" name="generate_index" checked> Generate HTML index</label>
+            <label class="check-pill"><input type="checkbox" id="block_third_party_media" name="block_third_party_media"> Block third-party media (YouTube, etc.)</label>
           </div>
+          <p class="hint">Leave this off for the most faithful page rendering. Turn it on only if embedded media causes browser connection prompts.</p>
         </div>
 
         <div class="field full">
@@ -452,6 +454,7 @@ HTML_PAGE = """<!DOCTYPE html>
         max_urls: document.getElementById('max_urls').value,
         only_failed: document.getElementById('only_failed').checked,
         generate_index: document.getElementById('generate_index').checked,
+        block_third_party_media: document.getElementById('block_third_party_media').checked,
       };
     }
 
@@ -847,6 +850,8 @@ def build_command(state: AppState, payload: Dict[str, Any]) -> list[str]:
         command.append('--generate-index')
     if payload.get('only_failed'):
         command.append('--only-failed')
+    if payload.get('block_third_party_media'):
+        command.append('--block-third-party-media')
 
     include_filters = str(payload.get('include_filters', '')).strip()
     exclude_filters = str(payload.get('exclude_filters', '')).strip()

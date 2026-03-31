@@ -96,6 +96,19 @@ SECOND_PASS_FLAGS = {
     'tiny_page_height',
 }
 
+BLOCKED_MEDIA_HOSTS = (
+    'youtube.com',
+    'www.youtube.com',
+    'm.youtube.com',
+    'youtube-nocookie.com',
+    'www.youtube-nocookie.com',
+    'youtu.be',
+    'ytimg.com',
+    'i.ytimg.com',
+    's.ytimg.com',
+    'googlevideo.com',
+)
+
 
 def slugify(url: str) -> str:
     """Convert a URL into a filesystem-safe slug.
@@ -171,6 +184,16 @@ def canonical_page_target(url: Optional[str]) -> Tuple[str, str]:
 def has_meaningful_redirect(input_url: str, final_url: Optional[str]) -> bool:
     """Return True when the final page target differs beyond scheme or trailing slash."""
     return canonical_page_target(input_url) != canonical_page_target(final_url)
+
+
+def blocked_media_host(url: str) -> str:
+    """Return the blocked media host for a request URL, or an empty string."""
+    hostname = (urlparse(url).hostname or '').lower()
+    for blocked_host in BLOCKED_MEDIA_HOSTS:
+        normalized = blocked_host.lower()
+        if hostname == normalized or hostname.endswith('.' + normalized):
+            return normalized
+    return ''
 
 
 def normalize_input_url(raw_input: str) -> str:
@@ -621,6 +644,7 @@ async def process_url(
     sitemap_source: str,
     retries: int,
     timing_profile: Dict[str, int],
+    block_third_party_media: bool,
     page_index: int,
     total_pages: int,
 ) -> None:
@@ -642,6 +666,7 @@ async def process_url(
         result_flags: List[str] = []
         page_state: Dict[str, Any] = {}
         extra_stabilization_used = False
+        blocked_hosts: Set[str] = set()
         screenshot_path = os.path.join(page_dir, f"{vp_name}.png")
         attempt = 0
         context = None
@@ -654,6 +679,17 @@ async def process_url(
         while attempt <= retries and not success:
             try:
                 context = await browser.new_context(viewport={"width": width, "height": height})
+
+                if block_third_party_media:
+                    async def handle_route(route) -> None:
+                        host = blocked_media_host(route.request.url)
+                        if host:
+                            blocked_hosts.add(host)
+                            await route.abort()
+                            return
+                        await route.continue_()
+
+                    await context.route('**/*', handle_route)
                 page = await context.new_page()
                 response: Optional[Response] = await page.goto(
                     url,
@@ -682,6 +718,8 @@ async def process_url(
                 await page.wait_for_timeout(timing_profile['final_wait_ms'])
                 page_state = await collect_page_state(page)
                 result_flags = analyze_page_state(url, final_url, status_code, page_title, page_state)
+                if block_third_party_media and blocked_hosts:
+                    result_flags.append('third_party_media_blocked')
                 if any(flag in SECOND_PASS_FLAGS for flag in result_flags):
                     extra_stabilization_used = True
                     print(
@@ -691,6 +729,18 @@ async def process_url(
                     await run_additional_stabilization_pass(page, timing_profile)
                     page_state = await collect_page_state(page)
                     result_flags = analyze_page_state(url, final_url, status_code, page_title, page_state)
+                    if block_third_party_media and blocked_hosts:
+                        result_flags.append('third_party_media_blocked')
+                if block_third_party_media and blocked_hosts:
+                    unique_flags: List[str] = []
+                    for flag in result_flags:
+                        if flag not in unique_flags:
+                            unique_flags.append(flag)
+                    result_flags = unique_flags
+                    print(
+                        f"[{page_index}/{total_pages}] {slug} [{vp_name}] blocked third-party media: "
+                        f"{', '.join(sorted(blocked_hosts))}"
+                    )
                 await page.screenshot(path=screenshot_path, full_page=True)
                 success = True
                 page_successes += 1
@@ -933,7 +983,7 @@ async def run_for_site(
             async with semaphore:
                 await process_url(
                     browser, page_url, viewports, paths['run_dir'], report,
-                    sitemap_source, args.retries, timing_profile, page_index, total_pages
+                    sitemap_source, args.retries, timing_profile, args.block_third_party_media, page_index, total_pages
                 )
 
         tasks = [
@@ -945,7 +995,7 @@ async def run_for_site(
         for index, page_url in enumerate(urls, start=1):
             await process_url(
                 browser, page_url, viewports, paths['run_dir'], report,
-                sitemap_source, args.retries, timing_profile, index, total_pages
+                sitemap_source, args.retries, timing_profile, args.block_third_party_media, index, total_pages
             )
 
     with open(paths['report_json'], 'w', encoding='utf-8') as f:
@@ -1012,6 +1062,8 @@ async def main() -> None:
                         help='Process at most this many URLs after filtering. Useful for safer sample runs.')
     parser.add_argument('--timeout-profile', choices=['normal', 'slow'], default='normal',
                         help='Timing profile for page loading and waits (default: normal). Use slow for heavier sites.')
+    parser.add_argument('--block-third-party-media', action='store_true',
+                        help='Block known third-party video/embed hosts such as YouTube during capture. This may reduce browser prompts but can change layout.')
     parser.add_argument('--only-failed', action='store_true',
                         help='Reprocess only pages marked as failed in the last report.json file for this domain.')
     parser.add_argument('--generate-index', action='store_true',
