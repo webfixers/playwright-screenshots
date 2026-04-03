@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <signal.h>
+#import <sys/stat.h>
+#import <sys/xattr.h>
 
 static NSString *const kEventPrefix = @"EVENT_JSON:";
 
@@ -366,6 +368,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = NO;
     panel.canChooseDirectories = YES;
+    panel.canCreateDirectories = YES;
     panel.allowsMultipleSelection = NO;
     panel.prompt = @"Choose folder";
     panel.message = @"Choose the base folder where screenshots and reports should be saved.";
@@ -633,6 +636,86 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     return [[self projectRootURL] URLByAppendingPathComponent:@"screenshot.py"];
 }
 
+- (NSURL *)playwrightBundledNodeURL {
+    return [[self projectRootURL] URLByAppendingPathComponent:@".venv/lib/python3.9/site-packages/playwright/driver/node"];
+}
+
+- (NSURL *)runtimeSupportDirectoryURL {
+    NSURL *baseURL = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
+                                                             inDomains:NSUserDomainMask] firstObject];
+    return [[baseURL URLByAppendingPathComponent:@"Playwright Screenshots"] URLByAppendingPathComponent:@"runtime"];
+}
+
+- (void)stripExtendedAttributesFromPath:(NSString *)path {
+    const char *fsPath = path.fileSystemRepresentation;
+    if (fsPath == NULL) {
+        return;
+    }
+    const char *attributes[] = {
+        "com.apple.quarantine",
+        "com.apple.provenance",
+        "com.google.drivefs.item-id#S",
+        "com.apple.lastuseddate#PS",
+    };
+    for (NSUInteger index = 0; index < sizeof(attributes) / sizeof(attributes[0]); index++) {
+        removexattr(fsPath, attributes[index], 0);
+    }
+}
+
+- (NSURL *)preparedPlaywrightNodeURLWithError:(NSString **)errorMessage {
+    NSURL *sourceURL = [self playwrightBundledNodeURL];
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:sourceURL.path]) {
+        if (errorMessage != NULL) {
+            *errorMessage = [NSString stringWithFormat:@"Missing Playwright node driver at %@", sourceURL.path];
+        }
+        return nil;
+    }
+
+    NSURL *runtimeDirectoryURL = [self runtimeSupportDirectoryURL];
+    NSError *directoryError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtURL:runtimeDirectoryURL
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:&directoryError]) {
+        if (errorMessage != NULL) {
+            *errorMessage = [NSString stringWithFormat:@"Could not create runtime folder: %@", directoryError.localizedDescription ?: runtimeDirectoryURL.path];
+        }
+        return nil;
+    }
+
+    NSURL *destinationURL = [runtimeDirectoryURL URLByAppendingPathComponent:@"playwright-node"];
+    NSDictionary<NSFileAttributeKey, id> *sourceAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:sourceURL.path error:nil];
+    NSDictionary<NSFileAttributeKey, id> *destinationAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:destinationURL.path error:nil];
+    BOOL shouldCopy = destinationAttributes == nil;
+    if (!shouldCopy) {
+        NSNumber *sourceSize = sourceAttributes[NSFileSize];
+        NSNumber *destinationSize = destinationAttributes[NSFileSize];
+        NSDate *sourceDate = sourceAttributes[NSFileModificationDate];
+        NSDate *destinationDate = destinationAttributes[NSFileModificationDate];
+        shouldCopy = ![sourceSize isEqualToNumber:destinationSize] ||
+                     ![sourceDate isEqualToDate:destinationDate];
+    }
+
+    if (shouldCopy) {
+        NSError *removeError = nil;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:destinationURL.path]) {
+            [[NSFileManager defaultManager] removeItemAtURL:destinationURL error:&removeError];
+            (void)removeError;
+        }
+        NSError *copyError = nil;
+        if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL toURL:destinationURL error:&copyError]) {
+            if (errorMessage != NULL) {
+                *errorMessage = [NSString stringWithFormat:@"Could not prepare local Playwright node driver: %@", copyError.localizedDescription ?: destinationURL.path];
+            }
+            return nil;
+        }
+    }
+
+    chmod(destinationURL.path.fileSystemRepresentation, 0755);
+    [self stripExtendedAttributesFromPath:destinationURL.path];
+    return destinationURL;
+}
+
 - (NSArray<NSString *> *)currentCommandArgumentsWithError:(NSString **)errorMessage {
     BOOL fileMode = [[self inputModeKey] isEqualToString:@"file"];
     NSString *inputValue = [self trimmedValue:self.urlField.stringValue ?: @""];
@@ -770,6 +853,8 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
     NSURL *pythonURL = [self pythonURL];
     NSURL *scriptURL = [self screenshotScriptURL];
+    NSString *runtimeError = nil;
+    NSURL *playwrightNodeURL = [self preparedPlaywrightNodeURLWithError:&runtimeError];
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:pythonURL.path]) {
         [self setStatus:@"Missing Python"
                  detail:[NSString stringWithFormat:@"Expected virtual environment Python at %@", pythonURL.path]];
@@ -780,6 +865,12 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
         [self setStatus:@"Missing screenshot.py"
                  detail:[NSString stringWithFormat:@"Expected screenshot.py at %@", scriptURL.path]];
         [self appendLog:[NSString stringWithFormat:@"Missing screenshot.py: %@\n", scriptURL.path]];
+        return;
+    }
+    if (playwrightNodeURL == nil) {
+        [self setStatus:@"Playwright runtime issue"
+                 detail:runtimeError ?: @"Could not prepare the Playwright node driver."];
+        [self appendLog:[NSString stringWithFormat:@"Playwright runtime issue: %@\n", runtimeError ?: @"Unknown error"]];
         return;
     }
 
@@ -816,6 +907,28 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     self.runTask.currentDirectoryURL = [self projectRootURL];
     self.runTask.executableURL = pythonURL;
     self.runTask.arguments = arguments;
+    NSMutableDictionary<NSString *, NSString *> *environment = [NSMutableDictionary dictionaryWithDictionary:NSProcessInfo.processInfo.environment ?: @{}];
+    if (environment[@"PATH"].length == 0) {
+        environment[@"PATH"] = @"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
+    }
+    if (environment[@"HOME"].length == 0) {
+        environment[@"HOME"] = NSHomeDirectory();
+    }
+    if (environment[@"TMPDIR"].length == 0) {
+        NSString *temporaryDirectory = NSTemporaryDirectory();
+        if (temporaryDirectory.length > 0) {
+            environment[@"TMPDIR"] = temporaryDirectory;
+        }
+    }
+    if (environment[@"LANG"].length == 0) {
+        environment[@"LANG"] = @"en_US.UTF-8";
+    }
+    if (environment[@"LC_ALL"].length == 0) {
+        environment[@"LC_ALL"] = @"en_US.UTF-8";
+    }
+    environment[@"PYTHONUNBUFFERED"] = @"1";
+    environment[@"PLAYWRIGHT_NODEJS_PATH"] = playwrightNodeURL.path;
+    self.runTask.environment = environment;
     self.runTask.standardInput = [NSFileHandle fileHandleForReadingAtPath:@"/dev/null"];
     self.outputPipe = [NSPipe pipe];
     self.runTask.standardOutput = self.outputPipe;
@@ -909,6 +1022,24 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
     if ([name isEqualToString:@"run_started"]) {
         [self setStatus:@"Running" detail:@"The screenshot engine is active."];
+        return;
+    }
+
+    if ([name isEqualToString:@"playwright_starting"]) {
+        self.detailLabel.stringValue = @"Starting Playwright...";
+        self.progressLabel.stringValue = @"Preparing the browser runtime.";
+        return;
+    }
+
+    if ([name isEqualToString:@"browser_launch_started"]) {
+        self.detailLabel.stringValue = @"Launching Chromium...";
+        self.progressLabel.stringValue = @"Waiting for the browser to start.";
+        return;
+    }
+
+    if ([name isEqualToString:@"browser_launch_finished"]) {
+        self.detailLabel.stringValue = @"Chromium launched.";
+        self.progressLabel.stringValue = @"Browser ready. Starting sitemap and page work.";
         return;
     }
 
@@ -1011,6 +1142,15 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     if ([name isEqualToString:@"run_aborted"]) {
         self.statusLabel.stringValue = self.stopRequested ? @"Stopped" : @"Aborted";
         self.detailLabel.stringValue = self.stopRequested ? @"Run stopped by user." : @"Run aborted.";
+        return;
+    }
+
+    if ([name isEqualToString:@"run_failed"]) {
+        self.statusLabel.stringValue = @"Failed";
+        NSString *stage = event[@"stage"] ?: @"run";
+        NSString *error = event[@"error"] ?: @"Unknown error";
+        self.detailLabel.stringValue = [NSString stringWithFormat:@"%@ failed.", stage];
+        self.progressLabel.stringValue = error;
         return;
     }
 

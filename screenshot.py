@@ -59,6 +59,8 @@ ACTIVE_EVENT_STREAM: Optional[str] = None
 TIMEOUT_PROFILES: Dict[str, Dict[str, int]] = {
     'normal': {
         'request_timeout_ms': 30000,
+        'playwright_start_timeout_ms': 15000,
+        'browser_launch_timeout_ms': 30000,
         'goto_timeout_ms': 60000,
         'initial_networkidle_timeout_ms': 30000,
         'post_scroll_networkidle_timeout_ms': 5000,
@@ -68,6 +70,8 @@ TIMEOUT_PROFILES: Dict[str, Dict[str, int]] = {
     },
     'slow': {
         'request_timeout_ms': 60000,
+        'playwright_start_timeout_ms': 30000,
+        'browser_launch_timeout_ms': 60000,
         'goto_timeout_ms': 90000,
         'initial_networkidle_timeout_ms': 45000,
         'post_scroll_networkidle_timeout_ms': 15000,
@@ -1278,31 +1282,63 @@ async def main() -> None:
 
     site_results: List[Dict[str, object]] = []
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+    print('Starting Playwright...')
+    emit_event('playwright_starting')
+    try:
+        pw_context = async_playwright()
+        pw = await asyncio.wait_for(
+            pw_context.__aenter__(),
+            timeout=timing_profile['playwright_start_timeout_ms'],
+        )
         try:
-            for site_index, site_input in enumerate(site_inputs, start=1):
-                result = await run_for_site(
-                    browser,
-                    site_input,
-                    args,
-                    viewports,
-                    date_str,
-                    include_terms,
-                    exclude_terms,
-                    timing_profile,
-                    should_open_output,
-                    site_index,
-                    len(site_inputs),
-                )
-                site_results.append(result)
-                emit_event('site_result', **result)
-                if result['status'] == 'skipped':
-                    print('Batch run aborted by user.')
-                    emit_event('run_aborted', reason='aborted_by_user')
-                    break
+            print('Launching Chromium...')
+            emit_event('browser_launch_started')
+            browser = await pw.chromium.launch(
+                headless=True,
+                timeout=timing_profile['browser_launch_timeout_ms'],
+            )
+            print('Chromium launched.')
+            emit_event('browser_launch_finished')
+            try:
+                for site_index, site_input in enumerate(site_inputs, start=1):
+                    result = await run_for_site(
+                        browser,
+                        site_input,
+                        args,
+                        viewports,
+                        date_str,
+                        include_terms,
+                        exclude_terms,
+                        timing_profile,
+                        should_open_output,
+                        site_index,
+                        len(site_inputs),
+                    )
+                    site_results.append(result)
+                    emit_event('site_result', **result)
+                    if result['status'] == 'skipped':
+                        print('Batch run aborted by user.')
+                        emit_event('run_aborted', reason='aborted_by_user')
+                        break
+            finally:
+                await browser.close()
         finally:
-            await browser.close()
+            await pw_context.__aexit__(None, None, None)
+    except asyncio.TimeoutError:
+        print(
+            f"Playwright failed to start within {timing_profile['playwright_start_timeout_ms']} ms.",
+            file=sys.stderr,
+        )
+        emit_event(
+            'run_failed',
+            stage='playwright_start',
+            error=f"Timed out after {timing_profile['playwright_start_timeout_ms']} ms",
+        )
+        raise
+    except Exception as exc:
+        print(f"Playwright failed to start or launch Chromium: {exc}", file=sys.stderr)
+        emit_event('run_failed', stage='playwright_or_browser_launch', error=str(exc))
+        raise
 
     if len(site_results) > 1:
         success_count = sum(1 for result in site_results if result['status'] == 'success')
