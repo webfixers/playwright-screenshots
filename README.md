@@ -114,6 +114,7 @@ What this app does:
 - builds and uses its own custom macOS app icon
 - lets you enter a website or sitemap directly in a native window
 - supports both single-website mode and website-list-file mode
+- lets you choose the base output folder for screenshots and reports
 - shows native controls for variant, timeout profile, filters, max URLs, and media blocking
 - shows live run progress and logs in the native app window
 - lets you pause and resume the active run
@@ -126,6 +127,7 @@ What this app does:
 
 This is now a first native macOS frontend around the existing Python engine. The separate web GUI is still available, but the app no longer depends on opening it in a browser.
 The native app stores a small local history in `.native-app-history.json` inside the project folder.
+By default the native app uses the project's `screenshots/` folder, but you can now choose another output folder directly in the app window.
 
 ### Basic example
 

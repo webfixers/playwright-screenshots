@@ -12,6 +12,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 @property(nonatomic, strong) NSTextField *versionLabel;
 @property(nonatomic, strong) NSTextField *inputPromptLabel;
 @property(nonatomic, strong) NSTextField *urlField;
+@property(nonatomic, strong) NSTextField *outputField;
 @property(nonatomic, strong) NSTextField *includeField;
 @property(nonatomic, strong) NSTextField *excludeField;
 @property(nonatomic, strong) NSTextField *maxUrlsField;
@@ -26,6 +27,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 @property(nonatomic, strong) NSButton *stopButton;
 @property(nonatomic, strong) NSButton *openOutputButton;
 @property(nonatomic, strong) NSButton *chooseFileButton;
+@property(nonatomic, strong) NSButton *chooseOutputButton;
 @property(nonatomic, strong) NSButton *revealButton;
 @property(nonatomic, strong) NSButton *quitButton;
 @property(nonatomic, strong) NSPopUpButton *historyPopup;
@@ -359,6 +361,22 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     }
 }
 
+- (void)chooseOutputFolder:(id)sender {
+    (void)sender;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Choose folder";
+    panel.message = @"Choose the base folder where screenshots and reports should be saved.";
+    if ([self trimmedValue:self.outputField.stringValue].length > 0) {
+        panel.directoryURL = [NSURL fileURLWithPath:[self trimmedValue:self.outputField.stringValue]];
+    }
+    if ([panel runModal] == NSModalResponseOK) {
+        self.outputField.stringValue = panel.URL.path ?: @"";
+    }
+}
+
 - (void)openSelectedHistory:(id)sender {
     (void)sender;
     if (self.recentRuns.count == 0) {
@@ -437,76 +455,85 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
                                    placeholder:@"https://example.com or example.com/sitemap.xml"];
     self.chooseFileButton = [self buttonWithTitle:@"Choose File" action:@selector(chooseInputFile:) frame:NSMakeRect(width - 24 - 98, 620, 98, 28)];
 
+    NSTextField *outputPrompt = [self labelWithString:@"Output folder"
+                                                 font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
+                                                color:[self bodyTextColor]
+                                                frame:NSMakeRect(left, 580, 160, 18)];
+    self.outputField = [self inputFieldWithFrame:NSMakeRect(left, 548, width - 48 - 124, 28)
+                                     placeholder:@"screenshots"];
+    self.outputField.stringValue = [[[self projectRootURL] URLByAppendingPathComponent:@"screenshots"] path] ?: @"screenshots";
+    self.chooseOutputButton = [self buttonWithTitle:@"Choose Folder" action:@selector(chooseOutputFolder:) frame:NSMakeRect(width - 24 - 112, 548, 112, 28)];
+
     NSTextField *variantPrompt = [self labelWithString:@"Variant"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(left, 580, 120, 18)];
-    self.variantPopup = [self popupWithItems:@[@"basic", @"extended"] frame:NSMakeRect(left, 548, 180, 28)];
+                                                 frame:NSMakeRect(left, 508, 120, 18)];
+    self.variantPopup = [self popupWithItems:@[@"basic", @"extended"] frame:NSMakeRect(left, 476, 180, 28)];
 
     NSTextField *timeoutPrompt = [self labelWithString:@"Timeout profile"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(232, 580, 140, 18)];
-    self.timeoutPopup = [self popupWithItems:@[@"normal", @"slow"] frame:NSMakeRect(232, 548, 180, 28)];
+                                                 frame:NSMakeRect(232, 508, 140, 18)];
+    self.timeoutPopup = [self popupWithItems:@[@"normal", @"slow"] frame:NSMakeRect(232, 476, 180, 28)];
 
     NSTextField *maxPrompt = [self labelWithString:@"Max URLs"
                                               font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                              color:[self bodyTextColor]
-                                             frame:NSMakeRect(440, 580, 120, 18)];
-    self.maxUrlsField = [self inputFieldWithFrame:NSMakeRect(440, 548, 110, 28) placeholder:@"Optional"];
+                                             frame:NSMakeRect(440, 508, 120, 18)];
+    self.maxUrlsField = [self inputFieldWithFrame:NSMakeRect(440, 476, 110, 28) placeholder:@"Optional"];
 
     NSTextField *includePrompt = [self labelWithString:@"Include filters"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(left, 508, 140, 18)];
-    self.includeField = [self inputFieldWithFrame:NSMakeRect(left, 476, 388, 28)
+                                                 frame:NSMakeRect(left, 436, 140, 18)];
+    self.includeField = [self inputFieldWithFrame:NSMakeRect(left, 404, 388, 28)
                                        placeholder:@"/blog/,/news/"];
 
     NSTextField *excludePrompt = [self labelWithString:@"Exclude filters"
                                                   font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                  color:[self bodyTextColor]
-                                                 frame:NSMakeRect(424, 508, 140, 18)];
-    self.excludeField = [self inputFieldWithFrame:NSMakeRect(424, 476, 412, 28)
+                                                 frame:NSMakeRect(424, 436, 140, 18)];
+    self.excludeField = [self inputFieldWithFrame:NSMakeRect(424, 404, 412, 28)
                                        placeholder:@"/tag/,/author/"];
 
-    self.onlyFailedButton = [self checkboxWithTitle:@"Only failed" frame:NSMakeRect(left, 438, 120, 18)];
-    self.generateIndexButton = [self checkboxWithTitle:@"Generate HTML index" frame:NSMakeRect(152, 438, 170, 18)];
-    self.blockMediaButton = [self checkboxWithTitle:@"Block third-party media" frame:NSMakeRect(334, 438, 190, 18)];
+    self.onlyFailedButton = [self checkboxWithTitle:@"Only failed" frame:NSMakeRect(left, 366, 120, 18)];
+    self.generateIndexButton = [self checkboxWithTitle:@"Generate HTML index" frame:NSMakeRect(152, 366, 170, 18)];
+    self.blockMediaButton = [self checkboxWithTitle:@"Block third-party media" frame:NSMakeRect(334, 366, 190, 18)];
     self.generateIndexButton.state = NSControlStateValueOn;
 
-    self.startButton = [self buttonWithTitle:@"Start Run" action:@selector(startRun:) frame:NSMakeRect(left, 394, 118, 32)];
-    self.pauseButton = [self buttonWithTitle:@"Pause Run" action:@selector(togglePauseRun:) frame:NSMakeRect(154, 394, 118, 32)];
-    self.stopButton = [self buttonWithTitle:@"Stop Run" action:@selector(stopRun:) frame:NSMakeRect(284, 394, 118, 32)];
-    self.openOutputButton = [self buttonWithTitle:@"Open Last Output" action:@selector(openLastOutput:) frame:NSMakeRect(414, 394, 140, 32)];
-    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:) frame:NSMakeRect(566, 394, 170, 32)];
+    self.startButton = [self buttonWithTitle:@"Start Run" action:@selector(startRun:) frame:NSMakeRect(left, 322, 118, 32)];
+    self.pauseButton = [self buttonWithTitle:@"Pause Run" action:@selector(togglePauseRun:) frame:NSMakeRect(154, 322, 118, 32)];
+    self.stopButton = [self buttonWithTitle:@"Stop Run" action:@selector(stopRun:) frame:NSMakeRect(284, 322, 118, 32)];
+    self.openOutputButton = [self buttonWithTitle:@"Open Last Output" action:@selector(openLastOutput:) frame:NSMakeRect(414, 322, 140, 32)];
+    self.revealButton = [self buttonWithTitle:@"Open Project Folder" action:@selector(revealProjectFolder:) frame:NSMakeRect(566, 322, 170, 32)];
     self.quitButton = [self buttonWithTitle:@"Quit App" action:@selector(quitApp:) frame:NSMakeRect(width - 24 - 118, 24, 118, 32)];
 
     self.statusLabel = [self labelWithString:@"Ready"
                                         font:[NSFont boldSystemFontOfSize:18]
                                        color:[NSColor colorWithCalibratedRed:0.10 green:0.32 blue:0.25 alpha:1.0]
-                                       frame:NSMakeRect(left, 350, 240, 22)];
+                                       frame:NSMakeRect(left, 278, 240, 22)];
     self.detailLabel = [self labelWithString:@"Fill in a website or sitemap above to start a native screenshot run."
                                         font:[NSFont systemFontOfSize:13]
                                        color:[self bodyTextColor]
-                                       frame:NSMakeRect(left, 328, width - 48, 18)];
+                                       frame:NSMakeRect(left, 256, width - 48, 18)];
     self.progressLabel = [self labelWithString:@"No active run."
                                           font:[NSFont systemFontOfSize:13]
                                          color:[self bodyTextColor]
-                                         frame:NSMakeRect(left, 304, width - 48, 18)];
+                                         frame:NSMakeRect(left, 232, width - 48, 18)];
     self.outputLabel = [self labelWithString:@"Last output: not available yet."
                                         font:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]
                                        color:[self mutedTextColor]
-                                       frame:NSMakeRect(left, 282, width - 48, 18)];
+                                       frame:NSMakeRect(left, 210, width - 48, 18)];
     self.outputLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 
     NSTextField *historyLabel = [self labelWithString:@"Recent runs"
                                                  font:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]
                                                 color:[self bodyTextColor]
-                                                frame:NSMakeRect(left, 246, 120, 18)];
-    self.historyPopup = [self popupWithItems:@[] frame:NSMakeRect(left, 212, width - 48 - 150, 28)];
-    self.openHistoryButton = [self buttonWithTitle:@"Open Selected" action:@selector(openSelectedHistory:) frame:NSMakeRect(width - 24 - 130, 212, 130, 28)];
+                                                frame:NSMakeRect(left, 174, 120, 18)];
+    self.historyPopup = [self popupWithItems:@[] frame:NSMakeRect(left, 140, width - 48 - 150, 28)];
+    self.openHistoryButton = [self buttonWithTitle:@"Open Selected" action:@selector(openSelectedHistory:) frame:NSMakeRect(width - 24 - 130, 140, 130, 28)];
 
-    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(left, 72, width - 48, 124)];
+    NSScrollView *logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(left, 72, width - 48, 52)];
     logScrollView.hasVerticalScroller = YES;
     logScrollView.borderType = NSNoBorder;
     logScrollView.drawsBackground = NO;
@@ -527,7 +554,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
                                         frame:NSMakeRect(left, 30, 160, 16)];
 
     for (NSView *view in @[
-        titleLabel, subtitleLabel, inputModePrompt, self.inputModePopup, self.inputPromptLabel, self.urlField, self.chooseFileButton, variantPrompt, self.variantPopup,
+        titleLabel, subtitleLabel, inputModePrompt, self.inputModePopup, self.inputPromptLabel, self.urlField, self.chooseFileButton, outputPrompt, self.outputField, self.chooseOutputButton, variantPrompt, self.variantPopup,
         timeoutPrompt, self.timeoutPopup, maxPrompt, self.maxUrlsField, includePrompt,
         self.includeField, excludePrompt, self.excludeField, self.onlyFailedButton,
         self.generateIndexButton, self.blockMediaButton, self.startButton, self.pauseButton, self.stopButton,
@@ -623,6 +650,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     }
 
     NSString *maxURLs = [self trimmedValue:self.maxUrlsField.stringValue ?: @""];
+    NSString *outputPath = [self trimmedValue:self.outputField.stringValue ?: @""];
     if (maxURLs.length > 0) {
         NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
         if ([maxURLs rangeOfCharacterFromSet:nonDigits].location != NSNotFound || maxURLs.integerValue < 1) {
@@ -631,6 +659,12 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
             }
             return nil;
         }
+    }
+    if (outputPath.length == 0) {
+        if (errorMessage != NULL) {
+            *errorMessage = @"Choose an output folder first.";
+        }
+        return nil;
     }
 
     NSURL *scriptURL = [self screenshotScriptURL];
@@ -644,6 +678,8 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
         @"--no-open",
         @"--event-stream",
         @"jsonl",
+        @"--output",
+        outputPath,
     ]];
     if (fileMode) {
         [arguments addObjectsFromArray:@[@"--url-file", inputValue]];
@@ -681,6 +717,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
 
 - (void)setInputsEnabled:(BOOL)enabled {
     self.urlField.editable = enabled;
+    self.outputField.editable = enabled;
     self.includeField.editable = enabled;
     self.excludeField.editable = enabled;
     self.maxUrlsField.editable = enabled;
@@ -691,6 +728,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     self.generateIndexButton.enabled = enabled;
     self.blockMediaButton.enabled = enabled;
     self.chooseFileButton.enabled = enabled && [[self inputModeKey] isEqualToString:@"file"];
+    self.chooseOutputButton.enabled = enabled;
 }
 
 - (void)setPausedState:(BOOL)paused {
@@ -1105,6 +1143,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     self.stopButton.title = @"Stop Run";
     self.openOutputButton.title = @"Open Last Output";
     self.chooseFileButton.title = @"Choose File";
+    self.chooseOutputButton.title = @"Choose Folder";
     self.openHistoryButton.title = @"Open Selected";
     self.revealButton.title = @"Open Project Folder";
     self.quitButton.title = @"Quit App";
@@ -1114,6 +1153,7 @@ static NSString *const kEventPrefix = @"EVENT_JSON:";
     [self applyStyleToButton:self.stopButton role:@"danger" enabled:canStop];
     [self applyStyleToButton:self.openOutputButton role:@"secondary" enabled:canOpenOutput];
     [self applyStyleToButton:self.chooseFileButton role:@"secondary" enabled:canChooseFile];
+    [self applyStyleToButton:self.chooseOutputButton role:@"secondary" enabled:canStart];
     [self applyStyleToButton:self.openHistoryButton role:@"secondary" enabled:canOpenHistory];
     [self applyStyleToButton:self.revealButton role:@"secondary" enabled:YES];
     [self applyStyleToButton:self.quitButton role:@"secondary" enabled:YES];
